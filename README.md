@@ -1,2 +1,4 @@
-References:
-- https://eli.thegreenplace.net/2019/simple-go-project-layout-with-modules/
+TODO:
+- Unhandlded json encode/decodes
+- handle INVALID_SESSION opcode (partly done)
+- change consts to CamelCase

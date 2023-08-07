@@ -1,11 +1,11 @@
 package main
 
 import (
-	"os"
-	"log"
 	"context"
-	"github.com/kausikk/discord-yt/internal"
 	"github.com/joho/godotenv"
+	"github.com/kausikk/discord-yt/internal"
+	"log"
+	"os"
 )
 
 const VERSION = "v0.0.0"
@@ -17,7 +17,11 @@ func main() {
 		log.Fatal(err)
 	}
 	for {
-		err = internal.Run(context.Background(), config)
-		log.Println("restart gateway, err:", err)
+		gw, err := internal.Connect(context.TODO(), config)
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = gw.Listen(context.TODO())
+		log.Printf("restart gateway: %v\n", err)
 	}
 }

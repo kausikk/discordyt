@@ -13,96 +13,152 @@ import (
 const DiscordWSS = "wss://gateway.discord.gg"
 const DefaultTimeout = 5 * time.Minute
 
-func Run(rootctx context.Context, config map[string]string) error {
-	// Connect to Discord websocket
-	dialCtx, dialCancel := context.WithTimeout(rootctx, DefaultTimeout)
-	c, _, err := websocket.Dial(dialCtx, DiscordWSS, nil)
-	dialCancel()
-	if err != nil {
-		return err
-	}
-	defer c.Close(websocket.StatusInternalError, "")
+type GatewayState int8
 
+const (
+	GwClosed GatewayState = iota
+	GwReady
+	GwResuming
+)
+
+type Gateway struct {
+	State         GatewayState
+	Ws            *websocket.Conn
+	LastSeq       int64
+	ResumeUrl     string
+	SessionId     string
+	HeartbeatIntv int64
+	BotToken      string
+}
+
+func Connect(rootctx context.Context, config map[string]string) (Gateway, error) {
+	var err error
 	readPayload := gatewayRead{}
 	sendPayload := gatewaySend{}
 
+	// Init gateway
+	gw := Gateway{}
+	gw.BotToken = config["BOT_TOKEN"]
+
+	// Connect to Discord websocket
+	dialCtx, dialCancel := context.WithTimeout(rootctx, DefaultTimeout)
+	gw.Ws, _, err = websocket.Dial(dialCtx, DiscordWSS, nil)
+	dialCancel()
+	if err != nil {
+		return gw, err
+	}
+	defer func() {
+		if gw.State == GwClosed {
+			gw.Ws.Close(websocket.StatusInternalError, "")
+		}
+	}()
+
 	// Receive HELLO event
-	if err = read(c, rootctx, &readPayload); err != nil {
-		return err
+	if err = read(gw.Ws, rootctx, &readPayload); err != nil {
+		return gw, err
 	}
 	helloData := helloData{}
 	json.Unmarshal(readPayload.D, &helloData)
 
+	// Store hb interval
+	gw.HeartbeatIntv = helloData.Interval
+
 	// Send IDENTIFY event
 	idData := identifyData{
-		Token:      config["BOT_TOKEN"],
+		Token:      gw.BotToken,
 		Intents:    GATEWAY_INTENTS,
 		Properties: GATEWAY_PROPERTIES,
 	}
 	sendPayload.Op = OPC_IDENTIFY
 	sendPayload.D, _ = json.Marshal(&idData)
-	if err = send(c, rootctx, &sendPayload); err != nil {
-		return err
+	if err = send(gw.Ws, rootctx, &sendPayload); err != nil {
+		return gw, err
 	}
 
 	// Receive READY or INVALID_SESSION event
-	if err = read(c, rootctx, &readPayload); err != nil {
-		return err
+	if err = read(gw.Ws, rootctx, &readPayload); err != nil {
+		return gw, err
 	}
 	if readPayload.Op == OPC_INVALID_SESSION {
-		return errors.New("received INVALID_SESSION after IDENTIFY")
+		return gw,
+			errors.New("received INVALID_SESSION after IDENTIFY")
 	}
 	readyData := readyData{}
 	json.Unmarshal(readPayload.D, &readyData)
 
-	// Create var for sequence number
-	lastSeq := readPayload.S
+	// Store session resume data
+	gw.SessionId = readyData.SessionId
+	gw.ResumeUrl = readyData.ResumeUrl
+	gw.LastSeq = readPayload.S
+
+	// Change to READY state
+	gw.State = GwReady
+	return gw, nil
+}
+
+func (gw *Gateway) Listen(rootctx context.Context) error {
+	var err error
+	readPayload := gatewayRead{}
+	sendPayload := gatewaySend{}
+
+	// If resume loop ends, close gateway
+	defer func() {
+		gw.State = GwClosed
+		gw.Ws.Close(websocket.StatusNormalClosure, "")
+	}()
 
 	// Enter resume loop
 	for {
+		// Start heartbeat
 		gwCtx, gwCancel := context.WithCancel(rootctx)
-		go heartbeat(c, gwCtx, helloData.Interval, &lastSeq)
+		go heartbeat(gw, gwCtx)
 
 		// Enter read loop
 		keepReading := true
 		for keepReading {
-			if err = read(c, gwCtx, &readPayload); err != nil {
+			if err = read(gw.Ws, gwCtx, &readPayload); err != nil {
 				log.Println("GW read err: ", err)
 				keepReading = false
 				break
 			}
 
-			// Store sequence number and handle event
-			lastSeq = readPayload.S
+			// Store sequence number
+			gw.LastSeq = readPayload.S
+
+			// Handle event according to opcode
 			switch readPayload.Op {
 			case OPC_HEARTBEAT:
 				// Send heartbeat
 				sendPayload.Op = OPC_HEARTBEAT
-				sendPayload.D, _ = json.Marshal(lastSeq)
-				if err = send(c, gwCtx, &sendPayload); err != nil {
+				sendPayload.D, _ = json.Marshal(gw.LastSeq)
+				err = send(gw.Ws, gwCtx, &sendPayload)
+				if err != nil {
 					keepReading = false
 				}
 			case OPC_RECONNECT:
 				// Close with ServiceRestart to trigger resume
 				// Errors on next read or send
-				c.Close(websocket.StatusServiceRestart, "")
+				gw.Ws.Close(websocket.StatusServiceRestart, "")
 			case OPC_INVALID_SESSION:
 				// Close with InvalidSession to avoid resume
 				// Errors on next read or send
-				c.Close(StatusGatewayInvalidSession, "")
+				gw.Ws.Close(StatusGatewayInvalidSession, "")
 			case OPC_DISPATCH:
 				// Handle dispatch
-				if err = handleDispatch(c, gwCtx, &readPayload); err != nil {
+				err = handleDispatch(gw, gwCtx, &readPayload)
+				if err != nil {
 					keepReading = false
 				}
 			}
 		}
+
+		// Change to Resuming state
 		// Cancel all child tasks
+		gw.State = GwResuming
 		gwCancel()
 
 		// If root ctx cancelled, dont attempt resume
 		if rootctx.Err() != nil {
-			c.Close(websocket.StatusNormalClosure, "")
 			return err
 		}
 
@@ -111,44 +167,50 @@ func Run(rootctx context.Context, config map[string]string) error {
 		log.Printf("close code: %d\n", status)
 		canResume, exists := ValidResumeCodes[status]
 		if !canResume && exists {
-			log.Println("unable to resume")
-			c.Close(websocket.StatusInternalError, "")
+			log.Println("can't resume")
 			return err
 		}
 
-		// Close, then connect to resume url
-		c.Close(websocket.StatusServiceRestart, "")
-		dialCtx, dialCancel = context.WithTimeout(rootctx, DefaultTimeout)
-		c, _, err = websocket.Dial(dialCtx, readyData.ResumeUrl, nil)
+		// Close websocket
+		gw.Ws.Close(websocket.StatusServiceRestart, "")
+
+		// Connect to resume url
+		dialCtx, dialCancel := context.WithTimeout(
+			rootctx, DefaultTimeout)
+		gw.Ws, _, err = websocket.Dial(dialCtx, gw.ResumeUrl, nil)
 		dialCancel()
 		if err != nil {
-			c.Close(websocket.StatusInternalError, "")
 			return err
 		}
 
 		// Receive HELLO event
-		if err = read(c, rootctx, &readPayload); err != nil {
-			c.Close(websocket.StatusInternalError, "")
+		if err = read(gw.Ws, rootctx, &readPayload); err != nil {
 			return err
 		}
+		helloData := helloData{}
 		json.Unmarshal(readPayload.D, &helloData)
+
+		// Store hb interval
+		gw.HeartbeatIntv = helloData.Interval
 
 		// Send RESUME event
 		resumeData := resumeData{
-			Token:     config["BOT_TOKEN"],
-			SessionId: readyData.SessionId,
-			S:         lastSeq,
+			Token:     gw.BotToken,
+			SessionId: gw.SessionId,
+			S:         gw.LastSeq,
 		}
 		sendPayload.Op = OPC_RESUME
 		sendPayload.D, _ = json.Marshal(&resumeData)
-		if err = send(c, rootctx, &sendPayload); err != nil {
-			c.Close(websocket.StatusInternalError, "")
+		if err = send(gw.Ws, rootctx, &sendPayload); err != nil {
 			return err
 		}
+
+		// Change to READY state
+		gw.State = GwReady
 	}
 }
 
-func handleDispatch(c *websocket.Conn, ctx context.Context,
+func handleDispatch(gw *Gateway, ctx context.Context,
 	payload *gatewayRead) error {
 	switch payload.T {
 	case "VOICE_STATE_UPDATE":
@@ -168,18 +230,18 @@ func handleDispatch(c *websocket.Conn, ctx context.Context,
 	return nil
 }
 
-func heartbeat(c *websocket.Conn, ctx context.Context, intv int64,
-	lastSeq *int64) error {
+func heartbeat(gw *Gateway, ctx context.Context) error {
 	heartbeat := gatewaySend{OPC_HEARTBEAT, nil}
 	for {
-		heartbeat.D, _ = json.Marshal(*lastSeq)
-		if err := send(c, ctx, &heartbeat); err != nil {
+		heartbeat.D, _ = json.Marshal(gw.LastSeq)
+		if err := send(gw.Ws, ctx, &heartbeat); err != nil {
 			return err
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(time.Duration(intv) * time.Millisecond):
+		case <-time.After(
+			time.Duration(gw.HeartbeatIntv) * time.Millisecond):
 		}
 	}
 }

@@ -15,7 +15,6 @@ var GATEWAY_PROPERTIES = identifyProperties{
 }
 
 type opcode int8
-type snowflake uint64
 
 // https://discord.com/developers/docs/topics/opcodes-and-status-codes
 const (

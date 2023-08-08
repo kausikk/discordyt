@@ -46,9 +46,8 @@ type GuildState struct {
 	voiceToken    string
 	voiceEndpoint string
 	voiceGw       *VoiceGateway
-	lock          sync.Mutex
-	isJoining     bool
-	joinedId      chan string
+	joinLock      sync.Mutex
+	joinedChnl    chan string
 }
 
 func Connect(rootctx context.Context, botToken, botAppId, botPublicKey string) (*Gateway, error) {
@@ -58,11 +57,11 @@ func Connect(rootctx context.Context, botToken, botAppId, botPublicKey string) (
 
 	// Init gateway
 	gw := Gateway{
-		BotToken: botToken,
-		BotAppId: botAppId,
-		botPublicKey: botPublicKey,
+		BotToken:      botToken,
+		BotAppId:      botAppId,
+		botPublicKey:  botPublicKey,
 		userOccupancy: cmap.New[string](),
-		guildStates: cmap.New[*GuildState](),
+		guildStates:   cmap.New[*GuildState](),
 	}
 
 	// Connect to Discord websocket
@@ -250,24 +249,15 @@ func (gw *Gateway) JoinChannel(rootctx context.Context, guildId, channelId strin
 	if !ok {
 		guild = &GuildState{}
 		guild.guildId = guildId
-		guild.joinedId = make(chan string)
+		guild.joinedChnl = make(chan string)
 		gw.guildStates.Set(guildId, guild)
 	}
 	gw.guildStatesLock.Unlock()
 
-	// Lock guild state before setting flag
-	guild.lock.Lock()
-
-	// Return if another thread is trying to join
-	if guild.isJoining {
-		guild.lock.Unlock()
-		return errors.New("already joining a chnl in this guild")
-	}
-
-	// Set isJoining flag
-	guild.isJoining = true
-	defer func() { guild.isJoining = false }()
-	guild.lock.Unlock()
+	// Lock guild to prevent JoinChannel()
+	// from executing in another thread
+	guild.joinLock.Lock()
+	defer guild.joinLock.Unlock()
 
 	// Send a voice state update
 	payload := gatewaySend{Op: OPC_VOICE_STATE_UPDATE}
@@ -280,16 +270,13 @@ func (gw *Gateway) JoinChannel(rootctx context.Context, guildId, channelId strin
 		return err
 	}
 
-	// Wait for channel joined or context cancel
+	// Wait for channel join or context cancel
 	select {
-	case joinedId := <-guild.joinedId:
+	case joinedId := <-guild.joinedChnl:
 		if joinedId != channelId {
 			return errors.New("unable to join channel")
 		}
 	case <-rootctx.Done():
-		// Have to make a new channel in case startVoiceGW
-		// tries to write to the channel after a timeout
-		guild.joinedId = make(chan string)
 		return rootctx.Err()
 	}
 
@@ -320,9 +307,7 @@ func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) erro
 		if !ok {
 			return nil
 		}
-		// Lock guild state and store data
-		guild.lock.Lock()
-		defer guild.lock.Unlock()
+		// Store data in guild state
 		guild.botChnlId = voiceData.ChannelId
 		guild.voiceSessId = voiceData.SessionId
 		isVoiceServerReady :=
@@ -333,10 +318,8 @@ func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) erro
 			if guild.voiceGw != nil {
 				guild.voiceGw.Close(ctx)
 			}
-			if guild.isJoining {
-				guild.joinedId <- voiceData.ChannelId
-			}
-		// Join voice gateway if ready
+			notifyJoin(guild, NotInChnl)
+			// Join voice gateway if ready
 		} else if isVoiceServerReady {
 			err = startVoiceGw(gw, guild, ctx)
 		}
@@ -354,9 +337,7 @@ func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) erro
 		if !ok {
 			return nil
 		}
-		// Lock guild state and store data
-		guild.lock.Lock()
-		defer guild.lock.Lock()
+		// Store data in guild state
 		guild.voiceEndpoint = "wss://" + serverData.Endpoint + "?v=4"
 		guild.voiceToken = serverData.Token
 		isVoiceStatusReady :=
@@ -409,18 +390,23 @@ func startVoiceGw(gw *Gateway, guild *GuildState, ctx context.Context) error {
 
 	// Send signal to JoinChannel
 	if err != nil {
-		if guild.isJoining {
-			guild.joinedId <- NotInChnl
-		}
+		notifyJoin(guild, NotInChnl)
 		return err
 	}
 
 	// Start listening in thread
-	if guild.isJoining {
-		guild.joinedId <- guild.botChnlId
-	}
+	notifyJoin(guild, guild.botChnlId)
 	go guild.voiceGw.Listen(ctx)
 	return nil
+}
+
+func notifyJoin(guild *GuildState, channelId string) {
+	select {
+	case guild.joinedChnl <- channelId:
+		log.Println("got here:", guild.guildId, channelId)
+	default:
+		log.Println("got here 2:", guild.guildId, channelId)
+	}
 }
 
 func heartbeat(gw *Gateway, ctx context.Context) error {

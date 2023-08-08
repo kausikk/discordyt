@@ -119,3 +119,38 @@ type voiceStateData struct {
 	UserId    string `json:"user_id"`
 	SessionId string `json:"session_id"`
 }
+
+type voiceStateUpdateData struct {
+	GuildId   string `json:"guild_id"`
+	ChannelId string `json:"channel_id"`
+	SelfMute  bool   `json:"self_mute"`
+	SelfDeaf  bool   `json:"self_deaf"`
+}
+
+type voiceServerUpdateData struct {
+	GuildId  string `json:"guild_id"`
+	Token    string `json:"token"`
+	Endpoint string `json:"endpoint"`
+}
+
+type InteractionData struct {
+	Token   string             `json:"token"`
+	Member  InteractionMember  `json:"member"`
+	Id      string             `json:"id"`
+	GuildId string             `json:"guild_id"`
+	Data    InteractionSubData `json:"data"`
+}
+type InteractionMember struct {
+	User InteractionUser `json:"user"`
+}
+type InteractionUser struct {
+	Id string `json:"id"`
+}
+type InteractionSubData struct {
+	Type    int64               `json:"type"`
+	Name    string              `json:"name"`
+	Options []InteractionOption `json:"options"`
+}
+type InteractionOption struct {
+	Value string `json:"value"`
+}

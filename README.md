@@ -1,4 +1,11 @@
 TODO:
 - Unhandlded json encode/decodes
-- handle INVALID_SESSION opcode (partly done)
-- change consts to CamelCase
+- handle INVALID_SESSION opcode (mostly done)
+- change consts and struct naming
+- handle non-existing GuildStates in handle dispatch (done?)
+- add Gateway Reconnect that tries to preserve guild states
+- add Gateway Close
+- when is voice server update event sent?
+- when should voice gateway be restarted?
+- what session id, token, and url should voice gateway use on resume/reconnect?
+- send channel leave when startVoiceGw fails?

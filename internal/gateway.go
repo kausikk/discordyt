@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"sync"
 	"time"
 
+	"github.com/orcaman/concurrent-map/v2"
 	"nhooyr.io/websocket"
 )
 
 const DiscordWSS = "wss://gateway.discord.gg"
-const DefaultTimeout = 5 * time.Minute
+const DefaultTimeout = 2 * time.Minute
+const NotInChnl = ""
 
 type GatewayState int8
 
@@ -22,30 +25,52 @@ const (
 )
 
 type Gateway struct {
-	State         GatewayState
-	Ws            *websocket.Conn
-	LastSeq       int64
-	ResumeUrl     string
-	SessionId     string
-	HeartbeatIntv int64
-	BotToken      string
+	State           GatewayState
+	Ws              *websocket.Conn
+	LastSeq         int64
+	ResumeUrl       string
+	SessionId       string
+	HeartbeatIntv   int64
+	BotToken        string
+	BotAppId        string
+	botPublicKey    string
+	userOccupancy   cmap.ConcurrentMap[string, string]
+	guildStates     cmap.ConcurrentMap[string, *GuildState]
+	guildStatesLock sync.Mutex
 }
 
-func Connect(rootctx context.Context, config map[string]string) (Gateway, error) {
+type GuildState struct {
+	guildId       string
+	botChnlId     string
+	voiceSessId   string
+	voiceToken    string
+	voiceEndpoint string
+	voiceGw       *VoiceGateway
+	lock          sync.Mutex
+	isJoining     bool
+	joinedId      chan string
+}
+
+func Connect(rootctx context.Context, botToken, botAppId, botPublicKey string) (*Gateway, error) {
 	var err error
 	readPayload := gatewayRead{}
 	sendPayload := gatewaySend{}
 
 	// Init gateway
-	gw := Gateway{}
-	gw.BotToken = config["BOT_TOKEN"]
+	gw := Gateway{
+		BotToken: botToken,
+		BotAppId: botAppId,
+		botPublicKey: botPublicKey,
+		userOccupancy: cmap.New[string](),
+		guildStates: cmap.New[*GuildState](),
+	}
 
 	// Connect to Discord websocket
 	dialCtx, dialCancel := context.WithTimeout(rootctx, DefaultTimeout)
 	gw.Ws, _, err = websocket.Dial(dialCtx, DiscordWSS, nil)
 	dialCancel()
 	if err != nil {
-		return gw, err
+		return nil, err
 	}
 	defer func() {
 		if gw.State == GwClosed {
@@ -55,7 +80,7 @@ func Connect(rootctx context.Context, config map[string]string) (Gateway, error)
 
 	// Receive HELLO event
 	if err = read(gw.Ws, rootctx, &readPayload); err != nil {
-		return gw, err
+		return nil, err
 	}
 	helloData := helloData{}
 	json.Unmarshal(readPayload.D, &helloData)
@@ -72,15 +97,15 @@ func Connect(rootctx context.Context, config map[string]string) (Gateway, error)
 	sendPayload.Op = OPC_IDENTIFY
 	sendPayload.D, _ = json.Marshal(&idData)
 	if err = send(gw.Ws, rootctx, &sendPayload); err != nil {
-		return gw, err
+		return nil, err
 	}
 
 	// Receive READY or INVALID_SESSION event
 	if err = read(gw.Ws, rootctx, &readPayload); err != nil {
-		return gw, err
+		return nil, err
 	}
 	if readPayload.Op == OPC_INVALID_SESSION {
-		return gw,
+		return nil,
 			errors.New("received INVALID_SESSION after IDENTIFY")
 	}
 	readyData := readyData{}
@@ -93,7 +118,7 @@ func Connect(rootctx context.Context, config map[string]string) (Gateway, error)
 
 	// Change to READY state
 	gw.State = GwReady
-	return gw, nil
+	return &gw, nil
 }
 
 func (gw *Gateway) Listen(rootctx context.Context) error {
@@ -210,28 +235,196 @@ func (gw *Gateway) Listen(rootctx context.Context) error {
 	}
 }
 
-func handleDispatch(gw *Gateway, ctx context.Context,
-	payload *gatewayRead) error {
+func (gw *Gateway) JoinChannel(rootctx context.Context, guildId, channelId string) error {
+	// Lock before any new guild states are created
+	gw.guildStatesLock.Lock()
+
+	// Check if bot is already in channel
+	guild, ok := gw.guildStates.Get(guildId)
+	if ok && guild.botChnlId == channelId {
+		gw.guildStatesLock.Unlock()
+		return nil
+	}
+
+	// Init guild state if doesn't exist
+	if !ok {
+		guild = &GuildState{}
+		guild.guildId = guildId
+		guild.joinedId = make(chan string)
+		gw.guildStates.Set(guildId, guild)
+	}
+	gw.guildStatesLock.Unlock()
+
+	// Lock guild state before setting flag
+	guild.lock.Lock()
+
+	// Return if another thread is trying to join
+	if guild.isJoining {
+		guild.lock.Unlock()
+		return errors.New("already joining a chnl in this guild")
+	}
+
+	// Set isJoining flag
+	guild.isJoining = true
+	defer func() { guild.isJoining = false }()
+	guild.lock.Unlock()
+
+	// Send a voice state update
+	payload := gatewaySend{Op: OPC_VOICE_STATE_UPDATE}
+	data := voiceStateUpdateData{
+		guildId, channelId, false, false,
+	}
+	payload.D, _ = json.Marshal(&data)
+	err := send(gw.Ws, rootctx, &payload)
+	if err != nil {
+		return err
+	}
+
+	// Wait for channel joined or context cancel
+	select {
+	case joinedId := <-guild.joinedId:
+		if joinedId != channelId {
+			return errors.New("unable to join channel")
+		}
+	case <-rootctx.Done():
+		// Have to make a new channel in case startVoiceGW
+		// tries to write to the channel after a timeout
+		guild.joinedId = make(chan string)
+		return rootctx.Err()
+	}
+
+	return nil
+}
+
+func (gw *Gateway) PlayAudio(guildId string) error {
+	return nil
+}
+
+func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) error {
 	switch payload.T {
 	case "VOICE_STATE_UPDATE":
+		// Get channel, user, and guild
 		voiceData := voiceStateData{}
 		json.Unmarshal(payload.D, &voiceData)
-		log.Printf("guild: %s channel: %s user: %s\n",
-			voiceData.GuildId,
-			voiceData.ChannelId,
-			voiceData.UserId)
+		log.Println("voice state:", voiceData)
+		gw.userOccupancy.Set(
+			voiceData.GuildId+voiceData.UserId,
+			voiceData.ChannelId)
+		// Return if not related to bot
+		if voiceData.UserId != gw.BotAppId {
+			return nil
+		}
+		// I think guild state should always be init'd by the time
+		// this event is received, so ignore event if not init'd
+		guild, ok := gw.guildStates.Get(voiceData.GuildId)
+		if !ok {
+			return nil
+		}
+		// Lock guild state and store data
+		guild.lock.Lock()
+		defer guild.lock.Unlock()
+		guild.botChnlId = voiceData.ChannelId
+		guild.voiceSessId = voiceData.SessionId
+		isVoiceServerReady :=
+			guild.voiceToken != "" && guild.voiceEndpoint != ""
+		var err error
+		// If chnl id is NotInChnl, make sure voice gw is closed
+		if guild.botChnlId == NotInChnl {
+			if guild.voiceGw != nil {
+				guild.voiceGw.Close(ctx)
+			}
+			if guild.isJoining {
+				guild.joinedId <- voiceData.ChannelId
+			}
+		// Join voice gateway if ready
+		} else if isVoiceServerReady {
+			err = startVoiceGw(gw, guild, ctx)
+		}
+		if err != nil {
+			log.Println("voice gw err:", err)
+		}
+	case "VOICE_SERVER_UPDATE":
+		// Get new voice server token and endpoint
+		serverData := voiceServerUpdateData{}
+		json.Unmarshal(payload.D, &serverData)
+		log.Println("voice server:", serverData)
+		// I think guild state should always be init'd by the time
+		// this event is received, so ignore event if not init'd
+		guild, ok := gw.guildStates.Get(serverData.GuildId)
+		if !ok {
+			return nil
+		}
+		// Lock guild state and store data
+		guild.lock.Lock()
+		defer guild.lock.Lock()
+		guild.voiceEndpoint = "wss://" + serverData.Endpoint + "?v=4"
+		guild.voiceToken = serverData.Token
+		isVoiceStatusReady :=
+			guild.botChnlId != NotInChnl && guild.voiceSessId != ""
+		var err error
+		// Join voice gateway if ready
+		if isVoiceStatusReady {
+			err = startVoiceGw(gw, guild, ctx)
+		}
+		if err != nil {
+			log.Println("voice gw err:", err)
+		}
 	case "RESUMED":
 		// Do nothing
 	case "VOICE_CHANNEL_STATUS_UPDATE":
 		// Do nothing
+	case "INTERACTION_CREATE":
+		interactionData := InteractionData{}
+		json.Unmarshal(payload.D, &interactionData)
+		switch interactionData.Data.Name {
+		case "play":
+			go play(gw, ctx, interactionData)
+		default:
+			log.Println(
+				"unhandled interaction:",
+				interactionData.Data.Name)
+		}
 	default:
 		log.Println("unhandled dispatch:", payload.T)
 	}
 	return nil
 }
 
+func startVoiceGw(gw *Gateway, guild *GuildState, ctx context.Context) error {
+	// Close voice gw if not already closed
+	if guild.voiceGw != nil {
+		guild.voiceGw.Close(ctx)
+	}
+
+	// Create voice gateway
+	var err error
+	guild.voiceGw, err = VoiceConnect(
+		ctx,
+		gw.BotAppId,
+		guild.guildId,
+		guild.voiceSessId,
+		guild.voiceToken,
+		guild.voiceEndpoint,
+	)
+
+	// Send signal to JoinChannel
+	if err != nil {
+		if guild.isJoining {
+			guild.joinedId <- NotInChnl
+		}
+		return err
+	}
+
+	// Start listening in thread
+	if guild.isJoining {
+		guild.joinedId <- guild.botChnlId
+	}
+	go guild.voiceGw.Listen(ctx)
+	return nil
+}
+
 func heartbeat(gw *Gateway, ctx context.Context) error {
-	heartbeat := gatewaySend{OPC_HEARTBEAT, nil}
+	heartbeat := gatewaySend{Op: OPC_HEARTBEAT}
 	for {
 		heartbeat.D, _ = json.Marshal(gw.LastSeq)
 		if err := send(gw.Ws, ctx, &heartbeat); err != nil {
@@ -246,8 +439,7 @@ func heartbeat(gw *Gateway, ctx context.Context) error {
 	}
 }
 
-func read(c *websocket.Conn, ctx context.Context,
-	payload *gatewayRead) error {
+func read(c *websocket.Conn, ctx context.Context, payload *gatewayRead) error {
 	ctx, cancel := context.WithTimeout(ctx, DefaultTimeout)
 	defer cancel()
 	_, raw, err := c.Read(ctx)
@@ -263,8 +455,7 @@ func read(c *websocket.Conn, ctx context.Context,
 	return err
 }
 
-func send(c *websocket.Conn, ctx context.Context,
-	payload *gatewaySend) error {
+func send(c *websocket.Conn, ctx context.Context, payload *gatewaySend) error {
 	encoded, _ := json.Marshal(payload)
 	ctx, cancel := context.WithTimeout(ctx, DefaultTimeout)
 	defer cancel()

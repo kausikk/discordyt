@@ -17,7 +17,12 @@ func main() {
 		log.Fatal(err)
 	}
 	for {
-		gw, err := internal.Connect(context.TODO(), config)
+		gw, err := internal.Connect(
+			context.TODO(),
+			config["BOT_TOKEN"],
+			config["BOT_APP_ID"],
+			config["BOT_PUBLIC_KEY"],
+		)
 		if err != nil {
 			log.Fatal(err)
 		}

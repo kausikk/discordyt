@@ -9,15 +9,23 @@ import (
 	"nhooyr.io/websocket"
 )
 
-const VoiceNonce = 123403290
-
-var SelectPrtclData = voiceSelectPrtclData{
+var CachedSelectPrtcl = voiceGwPayload{
+	Op: VoiceSelectPrtcl,
+	D: CachedSelectPrtclData,
+}
+var CachedSelectPrtclData, _ = json.Marshal(voiceSelectPrtclData{
 	Protocol: "udp",
 	Data: voiceSelectPrtclSubData{
 		Addr: "127.0.0.1",
 		Port: 8080,
 		Mode: "xsalsa20_poly1305_lite",
 	},
+})
+
+var CachedHeartbeat = voiceGwPayload{
+	Op: VoiceHeartbeat,
+	// Voice nonce = 123403290
+	D: []byte{49, 50, 51, 52, 48, 51, 50, 57, 48},
 }
 
 type VoiceGatewayState int8
@@ -105,9 +113,7 @@ func VoiceConnect(rootctx context.Context, botAppId, guildId, sessionId, token, 
 	voiceGw.port = readyData.Port
 
 	// Send SELECT PROTOCOL event
-	payload.Op = VoiceSelectPrtcl
-	payload.D, _ = json.Marshal(&SelectPrtclData)
-	if err = vSend(voiceGw.ws, rootctx, &payload); err != nil {
+	if err = vSend(voiceGw.ws, rootctx, &CachedSelectPrtcl); err != nil {
 		return nil, err
 	}
 
@@ -155,9 +161,7 @@ func (voiceGw *VoiceGateway) Listen(rootctx context.Context) error {
 			switch payload.Op {
 			case VoiceHeartbeat:
 				// Send heartbeat
-				payload.Op = VoiceHeartbeat
-				payload.D, _ = json.Marshal(VoiceNonce)
-				err = vSend(voiceGw.ws, gwCtx, &payload)
+				err = vSend(voiceGw.ws, gwCtx, &CachedHeartbeat)
 				if err != nil {
 					keepReading = false
 				}
@@ -235,10 +239,8 @@ func (voiceGw *VoiceGateway) Close(rootctx context.Context) error {
 }
 
 func voiceHeartbeat(voiceGw *VoiceGateway, ctx context.Context) error {
-	heartbeat := voiceGwPayload{Op: VoiceHeartbeat}
-	heartbeat.D, _ = json.Marshal(VoiceNonce)
 	for {
-		if err := vSend(voiceGw.ws, ctx, &heartbeat); err != nil {
+		if err := vSend(voiceGw.ws, ctx, &CachedHeartbeat); err != nil {
 			return err
 		}
 		select {

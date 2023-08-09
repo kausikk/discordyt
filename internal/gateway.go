@@ -15,6 +15,17 @@ import (
 const DiscordWSS = "wss://gateway.discord.gg"
 const DefaultTimeout = 2 * time.Minute
 
+// Connect voice permission (1 << 20) ||
+// Speak voice permission (1 << 21) ||
+// GUILD_VOICE_STATES intent (1 << 7) = 3145856
+const GatewayIntents = 1<<7 | 1<<20 | 1<<21
+
+var GatewayProperties = identifyProperties{
+	Os:      "linux",
+	Browser: "disco",
+	Device:  "lenovo thinkcentre",
+}
+
 type GatewayState int8
 
 const (
@@ -91,8 +102,8 @@ func Connect(rootctx context.Context, botToken, botAppId, botPublicKey string) (
 	// Send IDENTIFY event
 	idData := identifyData{
 		Token:      gw.botToken,
-		Intents:    GATEWAY_INTENTS,
-		Properties: GATEWAY_PROPERTIES,
+		Intents:    GatewayIntents,
+		Properties: GatewayProperties,
 	}
 	sendPayload.Op = Identify
 	sendPayload.D, _ = json.Marshal(&idData)

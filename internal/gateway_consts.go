@@ -6,14 +6,6 @@ import (
 	"nhooyr.io/websocket"
 )
 
-const GATEWAY_INTENTS = 1<<7 | 1<<20 | 1<<21
-
-var GATEWAY_PROPERTIES = identifyProperties{
-	Os:      "linux",
-	Browser: "disco",
-	Device:  "lenovo thinkcentre",
-}
-
 type opcode int8
 
 // https://discord.com/developers/docs/topics/opcodes-and-status-codes

@@ -1,11 +1,14 @@
 TODO:
 - Unhandlded json encode/decodes
-- handle INVALID_SESSION opcode (mostly done)
+- handle INVALID_SESSION opcode -> mostly done
 - change consts and struct naming
-- handle non-existing GuildStates in handle dispatch (done?)
+- handle non-existing GuildStates in handle dispatch -> i think my solution is ok
 - add Gateway Reconnect that tries to preserve guild states
 - add Gateway Close
-- when is voice server update event sent?
-- when should voice gateway be restarted?
-- what session id, token, and url should voice gateway use on resume/reconnect?
+- add SIGINT handling (need to close websockets)
+- unclear what happens when user manually drags bot into a different channel
+    - when is voice server update event sent? -> when moved to a different channel, either by moderator or by bot itself
+    - when should voice gateway be reconnected (not resumed)? -> after a pair of voice server/state update events are received with a non-nil channel
+    - what session id, token, and url should voice gateway use on resume/reconnect? -> same session id, token, and url used on first connect
 - send channel leave when startVoiceGw fails?
+- rename *_consts.go files

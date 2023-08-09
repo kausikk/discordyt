@@ -6,8 +6,6 @@ import (
 	"nhooyr.io/websocket"
 )
 
-const VoiceNonce = 123403290
-
 type voiceopcode int8
 
 const (
@@ -23,6 +21,20 @@ const (
 	VoiceResumed
 	VoiceClientDiscon voiceopcode = 13
 )
+
+var VoiceOpcodeNames = map[voiceopcode]string{
+	VoiceIdentify:     "IDENTIFY",
+	VoiceSelectPrtcl:  "SELECT_PROTOCOL",
+	VoiceReady:        "READY",
+	VoiceHeartbeat:    "HEARTBEAT",
+	VoiceSessDesc:     "SESSION_DESCRIPTION",
+	VoiceSpeaking:     "SPEAKING",
+	VoiceHeartbeatAck: "HEARTBEAT_ACK",
+	VoiceResume:       "RESUME",
+	VoiceHello:        "HELLO",
+	VoiceResumed:      "RESUMED",
+	VoiceClientDiscon: "CLIENT_DISCONNECT",
+}
 
 const (
 	StatusVoiceGwUnknownOp websocket.StatusCode = iota + 4001
@@ -43,7 +55,7 @@ const (
 	StatusVoiceGwUnknownEncy
 )
 
-var ValidVoiceResumeCodes = map[websocket.StatusCode]bool{
+var VoiceValidResumeCodes = map[websocket.StatusCode]bool{
 	StatusVoiceGwUnknownOp:    true,
 	StatusVoiceGwDecodeErr:    true,
 	StatusVoiceGwNotAuthd:     true,
@@ -56,6 +68,9 @@ var ValidVoiceResumeCodes = map[websocket.StatusCode]bool{
 	StatusVoiceGwDisconnect:   false,
 	StatusVoiceGwServerCrash:  true,
 	StatusVoiceGwUnknownEncy:  true,
+	// Custom
+	websocket.StatusNormalClosure:  false,
+	websocket.StatusServiceRestart: true,
 }
 
 type voiceGwPayload struct {
@@ -75,12 +90,17 @@ type voiceIdentifyData struct {
 }
 
 type voiceReadyData struct {
-	Ssrc int64  `json:"ssrc"`
+	Ssrc int32  `json:"ssrc"`
 	Ip   string `json:"ip"`
 	Port int64  `json:"port"`
 }
 
 type voiceSelectPrtclData struct {
+	Protocol string                  `json:"protocol"`
+	Data     voiceSelectPrtclSubData `json:"data"`
+}
+
+type voiceSelectPrtclSubData struct {
 	Addr string `json:"address"`
 	Port int64  `json:"port"`
 	Mode string `json:"mode"`
@@ -89,4 +109,10 @@ type voiceSelectPrtclData struct {
 type voiceSessDesc struct {
 	Mode      string `json:"mode"`
 	SecretKey []byte `json:"secret_key"`
+}
+
+type voiceResumeData struct {
+	ServerId  string `json:"server_id"`
+	SessionId string `json:"session_id"`
+	Token     string `json:"token"`
 }

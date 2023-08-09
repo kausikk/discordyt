@@ -32,6 +32,20 @@ const (
 	OPC_HEARTBEAT_ACK
 )
 
+var OpcodeNames = map[opcode]string{
+	OPC_DISPATCH:           "DISPATCH",
+	OPC_HEARTBEAT:          "HEARTBEAT",
+	OPC_IDENTIFY:           "IDENTIFY",
+	OPC_PRESENCE_UPDATE:    "PRESENCE_UPDATE",
+	OPC_VOICE_STATE_UPDATE: "VOICE_STATE_UPDATE",
+	OPC_RESUME:             "RESUME",
+	OPC_RECONNECT:          "RECONNECT",
+	OPC_REQUEST_GUILD_MEM:  "REQUEST_GUILD_MEM",
+	OPC_INVALID_SESSION:    "INVALID_SESSION",
+	OPC_HELLO:              "HELLO",
+	OPC_HEARTBEAT_ACK:      "HEARTBEAT_ACK",
+}
+
 const (
 	StatusGatewayUnknownErr websocket.StatusCode = iota + 4000
 	StatusGatewayUnknownOp
@@ -121,10 +135,10 @@ type voiceStateData struct {
 }
 
 type voiceStateUpdateData struct {
-	GuildId   string `json:"guild_id"`
-	ChannelId string `json:"channel_id"`
-	SelfMute  bool   `json:"self_mute"`
-	SelfDeaf  bool   `json:"self_deaf"`
+	GuildId   string  `json:"guild_id"`
+	ChannelId *string `json:"channel_id"`
+	SelfMute  bool    `json:"self_mute"`
+	SelfDeaf  bool    `json:"self_deaf"`
 }
 
 type voiceServerUpdateData struct {

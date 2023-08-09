@@ -25,17 +25,17 @@ const (
 
 type Gateway struct {
 	State           GatewayState
-	BotToken        string
-	BotAppId        string
+	botToken        string
+	botAppId        string
 	botPublicKey    string
 	userOccupancy   cmap.ConcurrentMap[string, string]
 	guildStates     cmap.ConcurrentMap[string, *GuildState]
 	guildStatesLock sync.Mutex
-	Ws              *websocket.Conn
-	LastSeq         int64
-	ResumeUrl       string
-	SessionId       string
-	HeartbeatIntv   int64
+	ws              *websocket.Conn
+	lastSeq         int64
+	resumeUrl       string
+	sessionId       string
+	heartbeatIntv   int64
 }
 
 type GuildState struct {
@@ -58,8 +58,8 @@ func Connect(rootctx context.Context, botToken, botAppId, botPublicKey string) (
 
 	// Init gateway
 	gw := Gateway{
-		BotToken:      botToken,
-		BotAppId:      botAppId,
+		botToken:      botToken,
+		botAppId:      botAppId,
 		botPublicKey:  botPublicKey,
 		userOccupancy: cmap.New[string](),
 		guildStates:   cmap.New[*GuildState](),
@@ -67,44 +67,44 @@ func Connect(rootctx context.Context, botToken, botAppId, botPublicKey string) (
 
 	// Connect to Discord websocket
 	dialCtx, dialCancel := context.WithTimeout(rootctx, DefaultTimeout)
-	gw.Ws, _, err = websocket.Dial(dialCtx, DiscordWSS, nil)
+	gw.ws, _, err = websocket.Dial(dialCtx, DiscordWSS, nil)
 	dialCancel()
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
 		if gw.State == GwClosed {
-			gw.Ws.Close(websocket.StatusInternalError, "")
+			gw.ws.Close(websocket.StatusInternalError, "")
 		}
 	}()
 
 	// Receive HELLO event
-	if err = read(gw.Ws, rootctx, &readPayload); err != nil {
+	if err = read(gw.ws, rootctx, &readPayload); err != nil {
 		return nil, err
 	}
 	helloData := helloData{}
 	json.Unmarshal(readPayload.D, &helloData)
 
 	// Store hb interval
-	gw.HeartbeatIntv = helloData.Interval
+	gw.heartbeatIntv = helloData.Interval
 
 	// Send IDENTIFY event
 	idData := identifyData{
-		Token:      gw.BotToken,
+		Token:      gw.botToken,
 		Intents:    GATEWAY_INTENTS,
 		Properties: GATEWAY_PROPERTIES,
 	}
-	sendPayload.Op = OPC_IDENTIFY
+	sendPayload.Op = Identify
 	sendPayload.D, _ = json.Marshal(&idData)
-	if err = send(gw.Ws, rootctx, &sendPayload); err != nil {
+	if err = send(gw.ws, rootctx, &sendPayload); err != nil {
 		return nil, err
 	}
 
 	// Receive READY or INVALID_SESSION event
-	if err = read(gw.Ws, rootctx, &readPayload); err != nil {
+	if err = read(gw.ws, rootctx, &readPayload); err != nil {
 		return nil, err
 	}
-	if readPayload.Op == OPC_INVALID_SESSION {
+	if readPayload.Op == InvalidSession {
 		return nil,
 			errors.New("received INVALID_SESSION after IDENTIFY")
 	}
@@ -112,9 +112,9 @@ func Connect(rootctx context.Context, botToken, botAppId, botPublicKey string) (
 	json.Unmarshal(readPayload.D, &readyData)
 
 	// Store session resume data
-	gw.SessionId = readyData.SessionId
-	gw.ResumeUrl = readyData.ResumeUrl
-	gw.LastSeq = readPayload.S
+	gw.sessionId = readyData.SessionId
+	gw.resumeUrl = readyData.ResumeUrl
+	gw.lastSeq = readPayload.S
 
 	// Change to READY state
 	gw.State = GwReady
@@ -129,7 +129,7 @@ func (gw *Gateway) Listen(rootctx context.Context) error {
 	// If resume loop ends, close gateway
 	defer func() {
 		gw.State = GwClosed
-		gw.Ws.Close(websocket.StatusNormalClosure, "")
+		gw.ws.Close(websocket.StatusNormalClosure, "")
 	}()
 
 	// Enter resume loop
@@ -141,34 +141,34 @@ func (gw *Gateway) Listen(rootctx context.Context) error {
 		// Enter read loop
 		keepReading := true
 		for keepReading {
-			if err = read(gw.Ws, gwCtx, &readPayload); err != nil {
+			if err = read(gw.ws, gwCtx, &readPayload); err != nil {
 				log.Println("gw read err:", err)
 				keepReading = false
 				break
 			}
 
 			// Store sequence number
-			gw.LastSeq = readPayload.S
+			gw.lastSeq = readPayload.S
 
 			// Handle event according to opcode
 			switch readPayload.Op {
-			case OPC_HEARTBEAT:
+			case Heartbeat:
 				// Send heartbeat
-				sendPayload.Op = OPC_HEARTBEAT
-				sendPayload.D, _ = json.Marshal(gw.LastSeq)
-				err = send(gw.Ws, gwCtx, &sendPayload)
+				sendPayload.Op = Heartbeat
+				sendPayload.D, _ = json.Marshal(gw.lastSeq)
+				err = send(gw.ws, gwCtx, &sendPayload)
 				if err != nil {
 					keepReading = false
 				}
-			case OPC_RECONNECT:
+			case Reconnect:
 				// Close with ServiceRestart to trigger resume
 				// Errors on next read or send
-				gw.Ws.Close(websocket.StatusServiceRestart, "")
-			case OPC_INVALID_SESSION:
+				gw.ws.Close(websocket.StatusServiceRestart, "")
+			case InvalidSession:
 				// Close with InvalidSession to avoid resume
 				// Errors on next read or send
-				gw.Ws.Close(StatusGatewayInvalidSession, "")
-			case OPC_DISPATCH:
+				gw.ws.Close(StatusGatewayInvalidSession, "")
+			case Dispatch:
 				// Handle dispatch
 				err = handleDispatch(gw, gwCtx, &readPayload)
 				if err != nil {
@@ -197,36 +197,36 @@ func (gw *Gateway) Listen(rootctx context.Context) error {
 		}
 
 		// Close websocket
-		gw.Ws.Close(websocket.StatusServiceRestart, "")
+		gw.ws.Close(websocket.StatusServiceRestart, "")
 
 		// Connect to resume url
 		dialCtx, dialCancel := context.WithTimeout(
 			rootctx, DefaultTimeout)
-		gw.Ws, _, err = websocket.Dial(dialCtx, gw.ResumeUrl, nil)
+		gw.ws, _, err = websocket.Dial(dialCtx, gw.resumeUrl, nil)
 		dialCancel()
 		if err != nil {
 			return err
 		}
 
 		// Receive HELLO event
-		if err = read(gw.Ws, rootctx, &readPayload); err != nil {
+		if err = read(gw.ws, rootctx, &readPayload); err != nil {
 			return err
 		}
 		helloData := helloData{}
 		json.Unmarshal(readPayload.D, &helloData)
 
 		// Store hb interval
-		gw.HeartbeatIntv = helloData.Interval
+		gw.heartbeatIntv = helloData.Interval
 
 		// Send RESUME event
 		resumeData := resumeData{
-			Token:     gw.BotToken,
-			SessionId: gw.SessionId,
-			S:         gw.LastSeq,
+			Token:     gw.botToken,
+			SessionId: gw.sessionId,
+			S:         gw.lastSeq,
 		}
-		sendPayload.Op = OPC_RESUME
+		sendPayload.Op = Resume
 		sendPayload.D, _ = json.Marshal(&resumeData)
-		if err = send(gw.Ws, rootctx, &sendPayload); err != nil {
+		if err = send(gw.ws, rootctx, &sendPayload); err != nil {
 			return err
 		}
 
@@ -261,12 +261,12 @@ func (gw *Gateway) JoinChannel(rootctx context.Context, guildId string, channelI
 	defer guild.joinLock.Unlock()
 
 	// Send a voice state update
-	payload := gatewaySend{Op: OPC_VOICE_STATE_UPDATE}
+	payload := gatewaySend{Op: VoiceStateUpdate}
 	data := voiceStateUpdateData{
 		guildId, channelId, false, false,
 	}
 	payload.D, _ = json.Marshal(&data)
-	err := send(gw.Ws, rootctx, &payload)
+	err := send(gw.ws, rootctx, &payload)
 	if err != nil {
 		return err
 	}
@@ -298,7 +298,7 @@ func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) erro
 			voiceData.GuildId+voiceData.UserId,
 			voiceData.ChannelId)
 		// Return if not related to bot
-		if voiceData.UserId != gw.BotAppId {
+		if voiceData.UserId != gw.botAppId {
 			return nil
 		}
 		log.Printf("voice state updt: guild: %s chnl: %s\n",
@@ -381,7 +381,7 @@ func startVoiceGw(gw *Gateway, guild *GuildState, ctx context.Context) error {
 	var err error
 	guild.voiceGw, err = VoiceConnect(
 		ctx,
-		gw.BotAppId,
+		gw.botAppId,
 		guild.guildId,
 		guild.voiceSessId,
 		guild.voiceToken,
@@ -428,17 +428,17 @@ func isIdEqual(id1 *string, id2 *string) bool {
 }
 
 func heartbeat(gw *Gateway, ctx context.Context) error {
-	heartbeat := gatewaySend{Op: OPC_HEARTBEAT}
+	heartbeat := gatewaySend{Op: Heartbeat}
 	for {
-		heartbeat.D, _ = json.Marshal(gw.LastSeq)
-		if err := send(gw.Ws, ctx, &heartbeat); err != nil {
+		heartbeat.D, _ = json.Marshal(gw.lastSeq)
+		if err := send(gw.ws, ctx, &heartbeat); err != nil {
 			return err
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(
-			time.Duration(gw.HeartbeatIntv) * time.Millisecond):
+			time.Duration(gw.heartbeatIntv) * time.Millisecond):
 		}
 	}
 }
@@ -454,7 +454,7 @@ func read(c *websocket.Conn, ctx context.Context, payload *gatewayRead) error {
 	payload.T = ""
 	payload.D = nil
 	json.Unmarshal(raw, payload) // Unhandled err
-	if payload.Op != OPC_HEARTBEAT_ACK {
+	if payload.Op != HeartbeatAck {
 		log.Printf("read: op: %s s: %d t: %s\n",
 			OpcodeNames[payload.Op], payload.S, payload.T)
 	}
@@ -466,7 +466,7 @@ func send(c *websocket.Conn, ctx context.Context, payload *gatewaySend) error {
 	ctx, cancel := context.WithTimeout(ctx, DefaultTimeout)
 	defer cancel()
 	err := c.Write(ctx, websocket.MessageText, encoded)
-	if payload.Op != opcode(OPC_HEARTBEAT) {
+	if payload.Op != opcode(Heartbeat) {
 		log.Println("send: op:", OpcodeNames[payload.Op])
 	}
 	return err

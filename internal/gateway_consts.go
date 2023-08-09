@@ -18,32 +18,32 @@ type opcode int8
 
 // https://discord.com/developers/docs/topics/opcodes-and-status-codes
 const (
-	OPC_DISPATCH opcode = iota
-	OPC_HEARTBEAT
-	OPC_IDENTIFY
-	OPC_PRESENCE_UPDATE
-	OPC_VOICE_STATE_UPDATE
+	Dispatch opcode = iota
+	Heartbeat
+	Identify
+	PresenceUpdate
+	VoiceStateUpdate
 	_
-	OPC_RESUME
-	OPC_RECONNECT
-	OPC_REQUEST_GUILD_MEM
-	OPC_INVALID_SESSION
-	OPC_HELLO
-	OPC_HEARTBEAT_ACK
+	Resume
+	Reconnect
+	RequestGuildMem
+	InvalidSession
+	Hello
+	HeartbeatAck
 )
 
 var OpcodeNames = map[opcode]string{
-	OPC_DISPATCH:           "DISPATCH",
-	OPC_HEARTBEAT:          "HEARTBEAT",
-	OPC_IDENTIFY:           "IDENTIFY",
-	OPC_PRESENCE_UPDATE:    "PRESENCE_UPDATE",
-	OPC_VOICE_STATE_UPDATE: "VOICE_STATE_UPDATE",
-	OPC_RESUME:             "RESUME",
-	OPC_RECONNECT:          "RECONNECT",
-	OPC_REQUEST_GUILD_MEM:  "REQUEST_GUILD_MEM",
-	OPC_INVALID_SESSION:    "INVALID_SESSION",
-	OPC_HELLO:              "HELLO",
-	OPC_HEARTBEAT_ACK:      "HEARTBEAT_ACK",
+	Dispatch:         "DISPATCH",
+	Heartbeat:        "HEARTBEAT",
+	Identify:         "IDENTIFY",
+	PresenceUpdate:   "PRESENCE_UPDATE",
+	VoiceStateUpdate: "VOICE_STATE_UPDATE",
+	Resume:           "RESUME",
+	Reconnect:        "RECONNECT",
+	RequestGuildMem:  "REQUEST_GUILD_MEM",
+	InvalidSession:   "INVALID_SESSION",
+	Hello:            "HELLO",
+	HeartbeatAck:     "HEARTBEAT_ACK",
 }
 
 const (

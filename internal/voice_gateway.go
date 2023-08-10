@@ -11,7 +11,7 @@ import (
 
 var CachedSelectPrtcl = voiceGwPayload{
 	Op: VoiceSelectPrtcl,
-	D: CachedSelectPrtclData,
+	D:  CachedSelectPrtclData,
 }
 var CachedSelectPrtclData, _ = json.Marshal(voiceSelectPrtclData{
 	Protocol: "udp",
@@ -231,10 +231,8 @@ func (voiceGw *VoiceGateway) Listen(rootctx context.Context) error {
 }
 
 func (voiceGw *VoiceGateway) Close(rootctx context.Context) error {
-	if voiceGw.State != VGwClosed {
-		voiceGw.State = VGwClosed
-		voiceGw.ws.Close(websocket.StatusNormalClosure, "")
-	}
+	voiceGw.State = VGwClosed
+	voiceGw.ws.Close(websocket.StatusNormalClosure, "")
 	return nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"github.com/kausikk/discord-yt/internal"
 	"log"
 	"os"
+	"os/signal"
 )
 
 const VERSION = "v0.0.0"
@@ -16,17 +17,32 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	for {
-		gw, err := internal.Connect(
-			context.TODO(),
-			config["BOT_TOKEN"],
-			config["BOT_APP_ID"],
-			config["BOT_PUBLIC_KEY"],
-		)
-		if err != nil {
-			log.Fatal(err)
-		}
-		err = gw.Listen(context.TODO())
-		log.Printf("restart gateway: %v\n", err)
+	sigint := make(chan os.Signal, 1)
+	signal.Notify(sigint, os.Interrupt)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	gw, err := internal.Connect(
+		context.TODO(),
+		config["BOT_TOKEN"],
+		config["BOT_APP_ID"],
+		config["BOT_PUBLIC_KEY"],
+	)
+	if err != nil {
+		log.Fatal("gateway connect failed:", err)
 	}
+	go func() {
+		for ctx.Err() == nil {
+			err = gw.Listen(ctx)
+			log.Println("restart gateway:", err)
+			err = gw.Reconnect(ctx)
+			if err != nil {
+				log.Println("gateway connect failed:", err)
+				break
+			}
+		}
+	}()
+	<-sigint
+	log.Println("captured sigint")
+	gw.Close(ctx)
+	cancel()
 }

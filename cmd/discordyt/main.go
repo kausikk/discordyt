@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"github.com/joho/godotenv"
-	"github.com/kausikk/discord-yt/internal"
+	"github.com/kausikk/discordyt/internal"
 	"log"
 	"os"
 	"os/signal"

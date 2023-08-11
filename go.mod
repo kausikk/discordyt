@@ -1,4 +1,4 @@
-module github.com/kausikk/discord-yt
+module github.com/kausikk/discordyt
 
 go 1.20
 

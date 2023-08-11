@@ -9,20 +9,28 @@ import (
 	"os/signal"
 )
 
-const VERSION = "v0.0.0"
+const VERSION = "v0.1"
 
 func main() {
+	// Read env variables
 	log.Println("Version:", VERSION)
+	if len(os.Args) < 2 {
+		log.Fatal("missing .env file")
+	}
 	config, err := godotenv.Read(os.Args[1])
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("unable to parse .env file")
 	}
+
+	// Prepare sig int (Ctrl + C) channel
 	sigint := make(chan os.Signal, 1)
 	signal.Notify(sigint, os.Interrupt)
+
+	// Start gateway
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	gw, err := internal.Connect(
-		context.TODO(),
+		ctx,
 		config["BOT_TOKEN"],
 		config["BOT_APP_ID"],
 		config["BOT_PUBLIC_KEY"],
@@ -31,6 +39,8 @@ func main() {
 	if err != nil {
 		log.Fatal("gateway connect failed:", err)
 	}
+
+	// Start Listen/Reconnect loop
 	go func() {
 		for ctx.Err() == nil {
 			err = gw.Listen(ctx)
@@ -42,8 +52,9 @@ func main() {
 			}
 		}
 	}()
+
+	// Wait for sig int
 	<-sigint
 	log.Println("captured sigint")
 	gw.Close(ctx)
-	cancel()
 }

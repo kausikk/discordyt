@@ -40,20 +40,19 @@ const PageHeaderLen = 27
 const MaxSegTableLen = 255
 const NonceLen = 24
 const RTPHeaderLen = 12
-
 // A packet is composed of at least one segment.
 // A packet is terminated by a segment of length < 255.
 // A segment of length = 255 indicates that a packet has only
 // been partially read, and must be completed by appending
 // the upcoming segments.
 const PartialPacketLen = 255
-
 // 20 ms packet of 128 kbps opus audio is approximately
 // 128000/8 * 20/1000 = 320 bytes. Apply a safety factor.
 const MaxPacketLen = 1024
-
 // Number of packets to send consecutively without waiting
 const PacketBurst = 10
+// Technically this should be 20 ms, but made it slightly
+// shorter for better audio continuity
 const PacketDuration = 19700 * time.Microsecond
 const VoicePacketTimeout = 5 * time.Second
 
@@ -90,7 +89,7 @@ type GuildState struct {
 	freshTokEnd   bool
 	freshChnlSess bool
 	voiceGw       *VoiceGateway
-	lock          sync.Mutex
+	lock          chan bool
 	joinedChnl    chan *string
 	voicePaks     chan []byte
 }
@@ -282,7 +281,7 @@ func (gw *Gateway) Listen(rootctx context.Context) error {
 		gw.State = GwReady
 	}
 }
-
+	
 func (gw *Gateway) JoinChannel(rootctx context.Context, guildId string, channelId *string) error {
 	// Check if bot is already in channel
 	gw.guildStatesLock.Lock()
@@ -296,6 +295,8 @@ func (gw *Gateway) JoinChannel(rootctx context.Context, guildId string, channelI
 	if !ok {
 		guild = &GuildState{}
 		guild.guildId = guildId
+		guild.lock = make(chan bool, 1)
+		guild.lock<-true
 		guild.joinedChnl = make(chan *string)
 		guild.voicePaks = make(chan []byte)
 		gw.guildStates[guildId] = guild
@@ -304,8 +305,13 @@ func (gw *Gateway) JoinChannel(rootctx context.Context, guildId string, channelI
 
 	// Lock guild to prevent JoinChannel()
 	// from executing in another thread
-	guild.lock.Lock()
-	defer guild.lock.Unlock()
+	select {
+	case <-guild.lock:
+		// Obtained lock
+	case <-rootctx.Done():
+		return errors.New("could not lock")
+	}
+	defer func () {guild.lock<-true}()
 
 	// Send a voice state update
 	payload := gatewaySend{Op: VoiceStateUpdate}
@@ -345,10 +351,15 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 		return errors.New("voice gateway not connected")
 	}
 
-	// Lock guild to prevent PlayAudio
+	// Lock guild to prevent PlayAudio()
 	// from executing in another thread
-	guild.lock.Lock()
-	defer guild.lock.Unlock()
+	select {
+	case <-guild.lock:
+		// Obtained lock
+	case <-rootctx.Done():
+		return errors.New("could not lock")
+	}
+	defer func () {guild.lock<-true}()
 
 	// Open song
 	f, err := os.Open(song)
@@ -401,12 +412,12 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 				pStart = 0
 				pNum += 1
 				select {
-				case <-rootctx.Done():
-					return rootctx.Err()
 				case guild.voicePaks <- packet:
 					// Do nothing
 				case <-time.After(VoicePacketTimeout):
 					return errors.New("timed out waiting to send packet")
+				case <-rootctx.Done():
+					return rootctx.Err()
 				}
 				if pNum == PacketBurst {
 					time.Sleep(PacketDuration * PacketBurst)
@@ -419,13 +430,31 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 	return nil
 }
 
+func (gw* Gateway) StopAudio(rootctx context.Context, guildId string) error {
+	// Get guild state
+	_, ok := getGuildState(gw, guildId)
+	if !ok {
+		return errors.New("bot not in guild")
+	}
+
+	// Send a voice state update to leave channel
+	payload := gatewaySend{Op: VoiceStateUpdate}
+	data := voiceStateUpdateData{
+		guildId, nil, false, false,
+	}
+	payload.D, _ = json.Marshal(&data)
+	return send(gw.ws, rootctx, &payload)
+}
+
 func (gw *Gateway) Close(rootctx context.Context) {
 	gw.State = GwClosed
 	gw.ws.Close(websocket.StatusNormalClosure, "")
 	gw.guildStatesLock.Lock()
 	defer gw.guildStatesLock.Unlock()
 	for _, guild := range gw.guildStates {
-		guild.voiceGw.Close(rootctx)
+		if guild.voiceGw != nil {
+			guild.voiceGw.Close(rootctx)
+		}
 		guild.freshTokEnd = false
 		guild.freshChnlSess = false
 	}
@@ -499,6 +528,8 @@ func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) erro
 		switch interactionData.Data.Name {
 		case "play":
 			go play(gw, ctx, interactionData)
+		case "stop":
+			go stop(gw, ctx, interactionData)
 		default:
 			log.Println(
 				"unhandled interaction:",

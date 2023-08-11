@@ -1,9 +1,19 @@
+# discordyt
+WIP, will add install steps later
+
+## Notes
 TODO:
 - unhandlded json encode/decodes
 - change consts and struct naming
 - rename *_consts.go files
 - add state handling to the start of connect, listen, reconnect, playaudio, join channel
-- Use UDP socket thread to monitor silence
+- Use UDP socket thread to monitor silence and leave channel
+- send silences frames after song ends
+- unhandled interaction resp errors
+- better way to build string buffer for response
+- play queue!!!
+- proper error definitions (replace error.New)
+- songId is input directly into full path, should be checked
 
 Done:
 - handle INVALID_SESSION opcode -> mostly done
@@ -17,6 +27,8 @@ Done:
 - add SIGINT handling (need to close websockets) -> done
 
 Ideas:
+- query youtube api to check if id is valid
+- better play command in general
 - Connect and Listen should be combined (Launch) -> No
 - Voice gateways might not need to be closed if Gateway relaunches?
 - send channel leave when startVoiceGw fails?

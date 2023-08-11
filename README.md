@@ -1,9 +1,9 @@
 TODO:
 - unhandlded json encode/decodes
 - change consts and struct naming
-- send channel leave when startVoiceGw fails?
 - rename *_consts.go files
 - add state handling to the start of connect, listen, reconnect, playaudio, join channel
+- Use UDP socket thread to monitor silence
 
 Done:
 - handle INVALID_SESSION opcode -> mostly done
@@ -19,3 +19,4 @@ Done:
 Ideas:
 - Connect and Listen should be combined (Launch) -> No
 - Voice gateways might not need to be closed if Gateway relaunches?
+- send channel leave when startVoiceGw fails?

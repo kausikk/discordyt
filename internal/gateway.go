@@ -2,14 +2,19 @@ package internal
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log"
-	// "os"
+	"net"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/orcaman/concurrent-map/v2"
+	"golang.org/x/crypto/nacl/secretbox"
 	"nhooyr.io/websocket"
 )
 
@@ -28,6 +33,30 @@ var GatewayProperties = identifyProperties{
 	Device:  "lenovo thinkcentre",
 }
 
+// https://datatracker.ietf.org/doc/html/rfc3533#section-6
+var MagicStr = []byte("OggS")
+
+const PageHeaderLen = 27
+const MaxSegTableLen = 255
+const NonceLen = 24
+const RTPHeaderLen = 12
+
+// A packet is composed of at least one segment.
+// A packet is terminated by a segment of length < 255.
+// A segment of length = 255 indicates that a packet has only
+// been partially read, and must be completed by appending
+// the upcoming segments.
+const PartialPacketLen = 255
+
+// 20 ms packet of 128 kbps opus audio is approximately
+// 128000/8 * 20/1000 = 320 bytes. Apply a safety factor.
+const MaxPacketLen = 1024
+
+// Number of packets to send consecutively without waiting
+const PacketBurst = 10
+const PacketDuration = 19700 * time.Microsecond
+const VoicePacketTimeout = 5 * time.Second
+
 type GatewayState int8
 
 const (
@@ -41,6 +70,7 @@ type Gateway struct {
 	botToken        string
 	botAppId        string
 	botPublicKey    string
+	songFolder      string
 	UserOccupancy   cmap.ConcurrentMap[string, string]
 	guildStatesLock sync.Mutex
 	guildStates     map[string]*GuildState
@@ -60,17 +90,18 @@ type GuildState struct {
 	freshTokEnd   bool
 	freshChnlSess bool
 	voiceGw       *VoiceGateway
-	joinLock      sync.Mutex
-	playLock      sync.Mutex
+	lock          sync.Mutex
 	joinedChnl    chan *string
+	voicePaks     chan []byte
 }
 
-func Connect(rootctx context.Context, botToken, botAppId, botPublicKey string) (*Gateway, error) {
+func Connect(rootctx context.Context, botToken, botAppId, botPublicKey, songFolder string) (*Gateway, error) {
 	// Init gateway
 	gw := Gateway{
 		botToken:      botToken,
 		botAppId:      botAppId,
 		botPublicKey:  botPublicKey,
+		songFolder:    songFolder,
 		UserOccupancy: cmap.New[string](),
 		guildStates:   make(map[string]*GuildState),
 	}
@@ -266,14 +297,15 @@ func (gw *Gateway) JoinChannel(rootctx context.Context, guildId string, channelI
 		guild = &GuildState{}
 		guild.guildId = guildId
 		guild.joinedChnl = make(chan *string)
+		guild.voicePaks = make(chan []byte)
 		gw.guildStates[guildId] = guild
 	}
 	gw.guildStatesLock.Unlock()
 
 	// Lock guild to prevent JoinChannel()
 	// from executing in another thread
-	guild.joinLock.Lock()
-	defer guild.joinLock.Unlock()
+	guild.lock.Lock()
+	defer guild.lock.Unlock()
 
 	// Send a voice state update
 	payload := gatewaySend{Op: VoiceStateUpdate}
@@ -313,16 +345,76 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 		return errors.New("voice gateway not connected")
 	}
 
-	// Open song
-	// f, err := os.ReadFile(song)
-	// if err != nil {
-	// 	return err
-	// }
-
 	// Lock guild to prevent PlayAudio
 	// from executing in another thread
-	guild.playLock.Lock()
-	defer guild.playLock.Unlock()
+	guild.lock.Lock()
+	defer guild.lock.Unlock()
+
+	// Open song
+	f, err := os.Open(song)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// https://datatracker.ietf.org/doc/html/rfc3533#section-6
+	headerBuf := [PageHeaderLen]byte{}
+	segTable := [MaxSegTableLen]byte{}
+	packetBuf := [MaxPacketLen]byte{}
+	pLen := 0
+	pNum := 0
+	pStart := 0
+	discard := 0
+	for {
+		n, err := io.ReadFull(f, headerBuf[:])
+		if err == io.EOF || n < PageHeaderLen {
+			break
+		}
+		tableLen := int(headerBuf[26])
+		_, err = io.ReadFull(f, segTable[:tableLen])
+		if err != nil {
+			return err
+		}
+		if discard < 2 {
+			s := sum(segTable[:tableLen])
+			temp := make([]byte, s)
+			_, err = io.ReadFull(f, temp)
+			if err != nil {
+				return err
+			}
+			discard += 1
+			continue
+		}
+		for i := 0; i < tableLen; i++ {
+			segLen := int(segTable[i])
+			_, err = io.ReadFull(f, packetBuf[pStart:pStart+segLen])
+			if err != nil {
+				return err
+			}
+			pLen += segLen
+			if segLen == PartialPacketLen {
+				pStart += PartialPacketLen
+			} else {
+				packet := make([]byte, pLen)
+				copy(packet, packetBuf[:pLen])
+				pLen = 0
+				pStart = 0
+				pNum += 1
+				select {
+				case <-rootctx.Done():
+					return rootctx.Err()
+				case guild.voicePaks <- packet:
+					// Do nothing
+				case <-time.After(VoicePacketTimeout):
+					return errors.New("timed out waiting to send packet")
+				}
+				if pNum == PacketBurst {
+					time.Sleep(PacketDuration * PacketBurst)
+					pNum = 0
+				}
+			}
+		}
+	}
 
 	return nil
 }
@@ -375,7 +467,7 @@ func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) erro
 			notifyJoin(guild, nil)
 			// Join voice gateway with new server data
 		} else if guild.freshTokEnd {
-			startVoiceGw(gw, ctx, guild)
+			startVoiceGw(guild, gw.botAppId, ctx)
 		}
 	case "VOICE_SERVER_UPDATE":
 		// Get new voice server token and endpoint
@@ -395,7 +487,7 @@ func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) erro
 		guild.freshTokEnd = true
 		// Join voice gateway with new session and non-null channel
 		if guild.freshChnlSess && guild.botChnlId != nil {
-			startVoiceGw(gw, ctx, guild)
+			startVoiceGw(guild, gw.botAppId, ctx)
 		}
 	case "RESUMED":
 		// Do nothing
@@ -425,7 +517,7 @@ func getGuildState(gw *Gateway, guildId string) (*GuildState, bool) {
 	return guild, ok
 }
 
-func startVoiceGw(gw *Gateway, ctx context.Context, guild *GuildState) {
+func startVoiceGw(guild *GuildState, botAppId string, ctx context.Context) {
 	// Close voice gw if not already closed
 	if guild.voiceGw != nil {
 		guild.voiceGw.Close(ctx)
@@ -445,7 +537,7 @@ func startVoiceGw(gw *Gateway, ctx context.Context, guild *GuildState) {
 		var err error
 		guild.voiceGw, err = VoiceConnect(
 			connCtx,
-			gw.botAppId,
+			botAppId,
 			guild.guildId,
 			guild.voiceSessId,
 			guild.voiceToken,
@@ -457,11 +549,71 @@ func startVoiceGw(gw *Gateway, ctx context.Context, guild *GuildState) {
 			notifyJoin(guild, nil)
 			return
 		}
-
-		// Start listening in thread
 		notifyJoin(guild, guild.botChnlId)
+
+		deadVoiceGw := make(chan bool)
+		// Start thread for sending packets
+		go startVoiceUdp(guild.voiceGw, ctx, guild.voicePaks, deadVoiceGw)
+		// Start listening
 		guild.voiceGw.Listen(ctx)
+		// After voice gw closes, notify udp handler
+		deadVoiceGw <- true
 	}()
+}
+
+func startVoiceUdp(voiceGw *VoiceGateway, ctx context.Context, voicePaks <-chan []byte, deadVoiceGW <-chan bool) {
+	// Open voice udp socket
+	url := fmt.Sprintf(
+		"%s:%d",
+		voiceGw.ip, voiceGw.port,
+	)
+	sock, err := net.Dial("udp", url)
+	if err != nil {
+		return
+	}
+	defer sock.Close()
+
+	err = voiceGw.Speaking(ctx, true)
+	if err != nil {
+		return
+	}
+
+	// xsalsa20_poly1305 stuff, see
+	// https://github.com/bwmarrin/discordgo
+	// https://discord.com/developers/docs/topics/
+	// voice-connections#encrypting-and-sending-voice
+	nonce := [NonceLen]byte{}
+	header := make([]byte, RTPHeaderLen)
+	header[0] = 0x80
+	header[1] = 0x78
+	binary.BigEndian.PutUint32(header[8:], voiceGw.ssrc)
+
+	for {
+		select {
+		case packet := <-voicePaks:
+			// more xsalsa20_poly1305 stuff
+			binary.BigEndian.PutUint16(header[2:], voiceGw.sequence)
+			binary.BigEndian.PutUint32(header[4:], voiceGw.timestamp)
+			voiceGw.sequence += 1
+			voiceGw.timestamp += 960
+			copy(nonce[:], header)
+			encrypted := secretbox.Seal(
+				header,
+				packet,
+				&nonce,
+				&voiceGw.secretKey,
+			)
+			_, err := sock.Write(encrypted)
+			if err != nil {
+				log.Println("udp err:", err)
+				return
+			}
+		case <-deadVoiceGW:
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 func notifyJoin(guild *GuildState, channelId *string) {
@@ -528,4 +680,12 @@ func send(c *websocket.Conn, ctx context.Context, payload *gatewaySend) error {
 		log.Println("send: op:", OpcodeNames[payload.Op])
 	}
 	return err
+}
+
+func sum(b []byte) int {
+	var sum int = 0
+	for _, v := range b {
+		sum += int(v)
+	}
+	return sum
 }

@@ -39,8 +39,8 @@ func play(gw *Gateway, rootctx context.Context, data InteractionData) {
 	}
 
 	// Try to join channel
-	joinChnl := &data.Data.Options[0].Value
-	if *joinChnl == "leave" {
+	joinChnl := &chnl
+	if *joinChnl == "" {
 		joinChnl = nil
 	}
 	ctx, cancel := context.WithTimeout(rootctx, JoinChannelTimeout)
@@ -58,6 +58,17 @@ func play(gw *Gateway, rootctx context.Context, data InteractionData) {
 		data.Id, data.Token, msg,
 		ChannelMessageWithSource,
 	)
+
+	songId := data.Data.Options[0].Value
+	err = gw.PlayAudio(
+		rootctx,
+		data.GuildId,
+		fmt.Sprintf("%s//%s.opus", gw.songFolder, songId),
+	)
+	if err != nil {
+		log.Println("play error:", err)
+	}
+	log.Println("done play")
 }
 
 func postInteractionResp(id, token, msg string, intType InteractionRespType) error {

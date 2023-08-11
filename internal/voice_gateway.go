@@ -18,7 +18,7 @@ var CachedSelectPrtclData, _ = json.Marshal(voiceSelectPrtclData{
 	Data: voiceSelectPrtclSubData{
 		Addr: "127.0.0.1",
 		Port: 8080,
-		Mode: "xsalsa20_poly1305_lite",
+		Mode: "xsalsa20_poly1305",
 	},
 })
 
@@ -45,10 +45,12 @@ type VoiceGateway struct {
 	endpoint      string
 	ws            *websocket.Conn
 	heartbeatIntv int64
-	ssrc          int32
+	ssrc          uint32
 	ip            string
 	port          int64
-	secretKey     []byte
+	secretKey     [32]byte
+	sequence      uint16
+	timestamp     uint32
 }
 
 func VoiceConnect(rootctx context.Context, botAppId, guildId, sessionId, token, endpoint string) (*VoiceGateway, error) {
@@ -118,14 +120,17 @@ func VoiceConnect(rootctx context.Context, botAppId, guildId, sessionId, token, 
 	}
 
 	// Receive description
-	if err = vRead(voiceGw.ws, rootctx, &payload); err != nil {
-		return nil, err
+	// Sometimes opcodes 18, 20 (unknown), or 5 (speaking) are sent
+	for payload.Op != VoiceSessDesc {
+		if err = vRead(voiceGw.ws, rootctx, &payload); err != nil {
+			return nil, err
+		}
 	}
 	sessData := voiceSessDesc{}
 	json.Unmarshal(payload.D, &sessData)
 
 	// Store secret key
-	voiceGw.secretKey = sessData.SecretKey
+	json.Unmarshal(sessData.SecretKey, &voiceGw.secretKey)
 
 	// Change to READY state
 	voiceGw.State = VGwReady
@@ -228,6 +233,23 @@ func (voiceGw *VoiceGateway) Listen(rootctx context.Context) error {
 		// Change to READY state
 		voiceGw.State = VGwReady
 	}
+}
+
+func (voiceGw *VoiceGateway) Speaking(rootctx context.Context, isSpeak bool) error {
+	val := int64(1)
+	if !isSpeak {
+		val = 0
+	}
+	data, _ := json.Marshal(voiceSpeakingData{
+		Speaking: val,
+		Delay:    0,
+		Ssrc:     voiceGw.ssrc,
+	})
+	payload := voiceGwPayload{
+		Op: VoiceSpeaking,
+		D:  data,
+	}
+	return vSend(voiceGw.ws, rootctx, &payload)
 }
 
 func (voiceGw *VoiceGateway) Close(rootctx context.Context) error {

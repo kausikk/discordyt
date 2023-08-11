@@ -90,7 +90,7 @@ type voiceIdentifyData struct {
 }
 
 type voiceReadyData struct {
-	Ssrc int32  `json:"ssrc"`
+	Ssrc uint32 `json:"ssrc"`
 	Ip   string `json:"ip"`
 	Port int64  `json:"port"`
 }
@@ -107,12 +107,18 @@ type voiceSelectPrtclSubData struct {
 }
 
 type voiceSessDesc struct {
-	Mode      string `json:"mode"`
-	SecretKey []byte `json:"secret_key"`
+	Mode      string          `json:"mode"`
+	SecretKey json.RawMessage `json:"secret_key"`
 }
 
 type voiceResumeData struct {
 	ServerId  string `json:"server_id"`
 	SessionId string `json:"session_id"`
 	Token     string `json:"token"`
+}
+
+type voiceSpeakingData struct {
+	Speaking int64  `json:"speaking"`
+	Delay    int64  `json:"delay"`
+	Ssrc     uint32 `json:"ssrc"`
 }

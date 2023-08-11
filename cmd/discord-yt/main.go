@@ -26,6 +26,7 @@ func main() {
 		config["BOT_TOKEN"],
 		config["BOT_APP_ID"],
 		config["BOT_PUBLIC_KEY"],
+		config["SONG_FOLDER"],
 	)
 	if err != nil {
 		log.Fatal("gateway connect failed:", err)

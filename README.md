@@ -25,10 +25,10 @@ Done:
 - add Gateway Reconnect that preserves guild states -> done
 - add Gateway Close -> done
 - add SIGINT handling (need to close websockets) -> done
-
+- Voice gateways might not need to be closed if Gateway relaunches? -> done
+ 
 Ideas:
 - query youtube api to check if id is valid
 - better play command in general
 - Connect and Listen should be combined (Launch) -> No
-- Voice gateways might not need to be closed if Gateway relaunches?
 - send channel leave when startVoiceGw fails?

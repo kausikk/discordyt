@@ -65,7 +65,7 @@ func play(gw *Gateway, rootctx context.Context, data InteractionData) {
 			patchResp(
 				gw.botAppId, data.Token, msg,
 			)
-			return 
+			return
 		}
 
 		// Convert to opus file
@@ -74,7 +74,7 @@ func play(gw *Gateway, rootctx context.Context, data InteractionData) {
 			log.Println("ffmpeg err:", err)
 			patchResp(
 				gw.botAppId, data.Token,
-				"Failed to convert " + songId,
+				"Failed to convert "+songId,
 			)
 			return
 		}
@@ -86,7 +86,7 @@ func play(gw *Gateway, rootctx context.Context, data InteractionData) {
 		if !checkExists(songPath) {
 			patchResp(
 				gw.botAppId, data.Token,
-				"Failed to download " + songId,
+				"Failed to download "+songId,
 			)
 			return
 		}
@@ -119,7 +119,7 @@ func play(gw *Gateway, rootctx context.Context, data InteractionData) {
 
 	patchResp(
 		gw.botAppId, data.Token,
-		"Playing song " + songId,
+		"Playing song "+songId,
 	)
 
 	err = gw.PlayAudio(
@@ -162,7 +162,7 @@ func postResp(id, token, msg string, intType InteractionRespType) error {
 	return nil
 }
 
-func patchResp(id, token, msg string) error {	
+func patchResp(id, token, msg string) error {
 	req, err := http.NewRequest(
 		"PATCH",
 		fmt.Sprintf(
@@ -202,7 +202,7 @@ func ytdlpCmd(songFolder, id string) error {
 }
 
 func ffmpegCmd(songPathNoExt string) error {
-	cmd := exec.Command("ffmpeg", "-i", songPathNoExt + ".webm", "-map_metadata", "-1", "-vn", "-c:a", "copy", "-f", "opus", "-ar", "48000", "-ac", "2", songPathNoExt + ".opus")
+	cmd := exec.Command("ffmpeg", "-i", songPathNoExt+".webm", "-map_metadata", "-1", "-vn", "-c:a", "copy", "-f", "opus", "-ar", "48000", "-ac", "2", songPathNoExt+".opus")
 	var errOut strings.Builder
 	cmd.Stderr = &errOut
 	err := cmd.Run()

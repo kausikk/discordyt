@@ -14,6 +14,7 @@ TODO:
 - play queue!!!
 - proper error definitions (replace error.New)
 - songId is input directly into full path, should be checked
+- gateway properties should be from environment
 
 Done:
 - handle INVALID_SESSION opcode -> mostly done

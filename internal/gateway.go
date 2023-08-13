@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -18,69 +19,69 @@ import (
 	"nhooyr.io/websocket"
 )
 
-const DiscordWSS = "wss://gateway.discord.gg"
-const DefaultTimeout = 2 * time.Minute
-const ConnectVoiceTimeout = 10 * time.Second
-const JoinChannelTimeout = 10 * time.Second
-const VoicePacketTimeout = 5 * time.Second
+const discordWSS = "wss://gateway.discord.gg"
+const defaultTimeout = 2 * time.Minute
+const connectVoiceTimeout = 10 * time.Second
+const joinChannelTimeout = 10 * time.Second
+const voicePacketTimeout = 5 * time.Second
 
 // Connect voice permission (1 << 20) ||
 // Speak voice permission (1 << 21) ||
 // GUILD_VOICE_STATES intent (1 << 7) = 3145856
-const GatewayIntents = 1<<7 | 1<<20 | 1<<21
+const gatewayIntents = 1<<7 | 1<<20 | 1<<21
 
-var GatewayProperties = identifyProperties{
+var gatewayProperties = identifyProperties{
 	Os:      "linux",
 	Browser: "disco",
 	Device:  "lenovo thinkcentre",
 }
 
-const PageHeaderLen = 27
-const MaxSegTableLen = 255
-const NonceLen = 24
-const RTPHeaderLen = 12
+const pageHeaderLen = 27
+const maxSegTableLen = 255
+const nonceLen = 24
+const rtpHeaderLen = 12
 
 // https://datatracker.ietf.org/doc/html/rfc3533#section-6
-var MagicStr = []byte("OggS")
+var magicStr = []byte("OggS")
 
 // A packet is composed of at least one segment.
 // A packet is terminated by a segment of length < 255.
 // A segment of length = 255 indicates that a packet has only
 // been partially read, and must be completed by appending
 // the upcoming segments.
-const PartialPacketLen = 255
+const partialPacketLen = 255
 
 // 20 ms packet of 128 kbps opus audio is approximately
 // 128000/8 * 20/1000 = 320 bytes. Apply a safety factor.
-const MaxPacketLen = 1024
+const maxPacketLen = 1024
 
 // Number of packets to send consecutively without waiting
-const PacketBurst = 10
+const packetBurst = 10
 
 // Technically this should be 20 ms, but made it slightly
 // shorter for better audio continuity
-const PacketDuration = 19700 * time.Microsecond
+const packetDuration = 19800 * time.Microsecond
 
 // Size of buffer channel for sending commands
 const cmbBufLen = 1000
 
-type GatewayState int8
+type gatewayState int8
 
 const (
-	GwClosed GatewayState = iota
-	GwReady
-	GwResuming
+	gwClosed gatewayState = iota
+	gwReady
+	gwResuming
 )
 
 type Gateway struct {
-	state           GatewayState
+	state           gatewayState
 	botToken        string
 	botAppId        string
 	botPublicKey    string
 	songFolder      string
 	userOccupancy   cmap.ConcurrentMap[string, string]
 	guildStatesLock sync.Mutex
-	guildStates     map[string]*GuildState
+	guildStates     map[string]*guildState
 	playCmd         chan InteractionData
 	stopCmd         chan InteractionData
 	ws              *websocket.Conn
@@ -90,7 +91,7 @@ type Gateway struct {
 	heartbeatIntv   int64
 }
 
-type GuildState struct {
+type guildState struct {
 	guildId       string
 	botChnlId     *string
 	voiceSessId   string
@@ -98,7 +99,7 @@ type GuildState struct {
 	voiceEndpoint string
 	freshTokEnd   bool
 	freshChnlSess bool
-	voiceGw       *VoiceGateway
+	voiceGw       *voiceGateway
 	joinLock      chan bool
 	playLock      chan bool
 	joinedChnl    chan *string
@@ -113,7 +114,7 @@ func Connect(rootctx context.Context, botToken, botAppId, botPublicKey, songFold
 		botPublicKey:  botPublicKey,
 		songFolder:    songFolder,
 		userOccupancy: cmap.New[string](),
-		guildStates:   make(map[string]*GuildState),
+		guildStates:   make(map[string]*guildState),
 		playCmd:       make(chan InteractionData, cmbBufLen),
 		stopCmd:       make(chan InteractionData, cmbBufLen),
 	}
@@ -127,14 +128,14 @@ func (gw *Gateway) Reconnect(rootctx context.Context) error {
 	sendPayload := gatewaySend{}
 
 	// Connect to Discord websocket
-	dialCtx, dialCancel := context.WithTimeout(rootctx, DefaultTimeout)
-	gw.ws, _, err = websocket.Dial(dialCtx, DiscordWSS, nil)
+	dialCtx, dialCancel := context.WithTimeout(rootctx, defaultTimeout)
+	gw.ws, _, err = websocket.Dial(dialCtx, discordWSS, nil)
 	dialCancel()
 	if err != nil {
 		return err
 	}
 	defer func() {
-		if gw.state == GwClosed {
+		if gw.state == gwClosed {
 			gw.ws.Close(websocket.StatusInternalError, "")
 		}
 	}()
@@ -152,10 +153,10 @@ func (gw *Gateway) Reconnect(rootctx context.Context) error {
 	// Send IDENTIFY event
 	idData := identifyData{
 		Token:      gw.botToken,
-		Intents:    GatewayIntents,
-		Properties: GatewayProperties,
+		Intents:    gatewayIntents,
+		Properties: gatewayProperties,
 	}
-	sendPayload.Op = Identify
+	sendPayload.Op = identify
 	sendPayload.D, _ = json.Marshal(&idData)
 	if err = send(gw.ws, rootctx, &sendPayload); err != nil {
 		return err
@@ -165,7 +166,7 @@ func (gw *Gateway) Reconnect(rootctx context.Context) error {
 	if err = read(gw.ws, rootctx, &readPayload); err != nil {
 		return err
 	}
-	if readPayload.Op == InvalidSession {
+	if readPayload.Op == invalidSession {
 		return errors.New("received INVALID_SESSION after IDENTIFY")
 	}
 	readyData := readyData{}
@@ -177,7 +178,7 @@ func (gw *Gateway) Reconnect(rootctx context.Context) error {
 	gw.lastSeq = readPayload.S
 
 	// Change to READY state
-	gw.state = GwReady
+	gw.state = gwReady
 	return nil
 }
 
@@ -188,7 +189,7 @@ func (gw *Gateway) Listen(rootctx context.Context) error {
 
 	// If resume loop ends, close gateway
 	defer func() {
-		gw.state = GwClosed
+		gw.state = gwClosed
 		gw.ws.Close(websocket.StatusNormalClosure, "")
 	}()
 
@@ -196,7 +197,7 @@ func (gw *Gateway) Listen(rootctx context.Context) error {
 	for {
 		// Start heartbeat
 		hbCtx, hbCancel := context.WithCancel(rootctx)
-		go heartbeat(gw, hbCtx)
+		go gwHeartbeat(gw, hbCtx)
 
 		// Enter read loop
 		keepReading := true
@@ -212,23 +213,23 @@ func (gw *Gateway) Listen(rootctx context.Context) error {
 
 			// Handle event according to opcode
 			switch readPayload.Op {
-			case Heartbeat:
+			case heartbeat:
 				// Send heartbeat
-				sendPayload.Op = Heartbeat
+				sendPayload.Op = heartbeat
 				sendPayload.D, _ = json.Marshal(gw.lastSeq)
 				err = send(gw.ws, rootctx, &sendPayload)
 				if err != nil {
 					keepReading = false
 				}
-			case Reconnect:
+			case reconnect:
 				// Close with ServiceRestart to trigger resume
 				// Errors on next read or send
 				gw.ws.Close(websocket.StatusServiceRestart, "")
-			case InvalidSession:
-				// Close with InvalidSession to avoid resume
+			case invalidSession:
+				// Close with invalidSession to avoid resume
 				// Errors on next read or send
-				gw.ws.Close(StatusGatewayInvalidSession, "")
-			case Dispatch:
+				gw.ws.Close(statusGatewayInvalidSession, "")
+			case dispatch:
 				// Handle dispatch
 				err = handleDispatch(gw, rootctx, &readPayload)
 				if err != nil {
@@ -239,7 +240,7 @@ func (gw *Gateway) Listen(rootctx context.Context) error {
 
 		// Change to Resuming state
 		// Cancel heartbeat
-		gw.state = GwResuming
+		gw.state = gwResuming
 		hbCancel()
 
 		// If root ctx cancelled, dont attempt resume
@@ -250,7 +251,7 @@ func (gw *Gateway) Listen(rootctx context.Context) error {
 		// Check if gateway can be resumed
 		status := websocket.CloseStatus(err)
 		log.Printf("close code: %d\n", status)
-		canResume, exists := ValidResumeCodes[status]
+		canResume, exists := validResumeCodes[status]
 		if !canResume && exists {
 			log.Println("can't resume")
 			return err
@@ -261,7 +262,7 @@ func (gw *Gateway) Listen(rootctx context.Context) error {
 
 		// Connect to resume url
 		dialCtx, dialCancel := context.WithTimeout(
-			rootctx, DefaultTimeout)
+			rootctx, defaultTimeout)
 		gw.ws, _, err = websocket.Dial(dialCtx, gw.resumeUrl, nil)
 		dialCancel()
 		if err != nil {
@@ -284,14 +285,14 @@ func (gw *Gateway) Listen(rootctx context.Context) error {
 			SessionId: gw.sessionId,
 			S:         gw.lastSeq,
 		}
-		sendPayload.Op = Resume
+		sendPayload.Op = resume
 		sendPayload.D, _ = json.Marshal(&resumeData)
 		if err = send(gw.ws, rootctx, &sendPayload); err != nil {
 			return err
 		}
 
 		// Change to READY state
-		gw.state = GwReady
+		gw.state = gwReady
 	}
 }
 
@@ -306,7 +307,7 @@ func (gw *Gateway) JoinChannel(rootctx context.Context, guildId string, channelI
 
 	// Init guild state if doesn't exist
 	if !ok {
-		guild = &GuildState{}
+		guild = &guildState{}
 		guild.guildId = guildId
 		guild.joinLock = make(chan bool, 1)
 		guild.joinLock <- true
@@ -329,7 +330,7 @@ func (gw *Gateway) JoinChannel(rootctx context.Context, guildId string, channelI
 	defer func() { guild.joinLock <- true }()
 
 	// Send a voice state update
-	payload := gatewaySend{Op: VoiceStateUpdate}
+	payload := gatewaySend{Op: voiceStateUpdate}
 	data := voiceStateUpdateData{
 		guildId, channelId, false, false,
 	}
@@ -345,17 +346,13 @@ func (gw *Gateway) JoinChannel(rootctx context.Context, guildId string, channelI
 		if !isIdEqual(joinedId, channelId) {
 			return errors.New("unable to join channel")
 		}
-	case <-time.After(JoinChannelTimeout):
+	case <-time.After(joinChannelTimeout):
 		return errors.New("channel join timeout")
 	case <-rootctx.Done():
 		return rootctx.Err()
 	}
 
 	return nil
-}
-
-func (gw *Gateway) GetUserChannel(guildId, userId string) (string, bool) {
-	return gw.userOccupancy.Get(guildId + userId)
 }
 
 func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) error {
@@ -368,7 +365,7 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 	// Check if voice is connected
 	if guild.voiceGw == nil {
 		return errors.New("voice gateway not connected")
-	} else if guild.voiceGw.State != VGwReady {
+	} else if guild.voiceGw.state != vGwReady {
 		return errors.New("voice gateway not connected")
 	}
 
@@ -390,16 +387,19 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 	defer f.Close()
 
 	// https://datatracker.ietf.org/doc/html/rfc3533#section-6
-	headerBuf := [PageHeaderLen]byte{}
-	segTable := [MaxSegTableLen]byte{}
-	packetBuf := [MaxPacketLen]byte{}
+	headerBuf := [pageHeaderLen]byte{}
+	segTable := [maxSegTableLen]byte{}
+	packetBuf := [maxPacketLen]byte{}
 	pLen := 0
 	pNum := 0
 	pStart := 0
 	discard := 0
 	for {
 		n, err := io.ReadFull(f, headerBuf[:])
-		if err == io.EOF || n < PageHeaderLen {
+		if err == io.EOF || n < pageHeaderLen {
+			break
+		}
+		if !bytes.Equal(magicStr, headerBuf[:4]) {
 			break
 		}
 		tableLen := int(headerBuf[26])
@@ -424,8 +424,8 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 				return err
 			}
 			pLen += segLen
-			if segLen == PartialPacketLen {
-				pStart += PartialPacketLen
+			if segLen == partialPacketLen {
+				pStart += partialPacketLen
 			} else {
 				packet := make([]byte, pLen)
 				copy(packet, packetBuf[:pLen])
@@ -435,13 +435,13 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 				select {
 				case guild.voicePaks <- packet:
 					// Do nothing
-				case <-time.After(VoicePacketTimeout):
+				case <-time.After(voicePacketTimeout):
 					return errors.New("packet send timeout")
 				case <-rootctx.Done():
 					return rootctx.Err()
 				}
-				if pNum == PacketBurst {
-					time.Sleep(PacketDuration * PacketBurst)
+				if pNum == packetBurst {
+					time.Sleep(packetDuration * packetBurst)
 					pNum = 0
 				}
 			}
@@ -459,7 +459,7 @@ func (gw *Gateway) StopAudio(rootctx context.Context, guildId string) error {
 	}
 
 	// Send a voice state update to leave channel
-	payload := gatewaySend{Op: VoiceStateUpdate}
+	payload := gatewaySend{Op: voiceStateUpdate}
 	data := voiceStateUpdateData{
 		guildId, nil, false, false,
 	}
@@ -467,16 +467,20 @@ func (gw *Gateway) StopAudio(rootctx context.Context, guildId string) error {
 	return send(gw.ws, rootctx, &payload)
 }
 
-func (gw *Gateway) PlayCmd(rootctx context.Context) <-chan InteractionData {
+func (gw *Gateway) GetUserChannel(guildId, userId string) (string, bool) {
+	return gw.userOccupancy.Get(guildId + userId)
+}
+
+func (gw *Gateway) PlayCmd() <-chan InteractionData {
 	return gw.playCmd
 }
 
-func (gw *Gateway) StopCmd(rootctx context.Context) <-chan InteractionData {
+func (gw *Gateway) StopCmd() <-chan InteractionData {
 	return gw.stopCmd
 }
 
 func (gw *Gateway) Close(rootctx context.Context) {
-	gw.state = GwClosed
+	gw.state = gwClosed
 	gw.ws.Close(websocket.StatusNormalClosure, "")
 	gw.guildStatesLock.Lock()
 	defer gw.guildStatesLock.Unlock()
@@ -547,37 +551,39 @@ func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) erro
 		if guild.freshChnlSess && guild.botChnlId != nil {
 			startVoiceGw(guild, gw.botAppId, ctx)
 		}
-	case "RESUMED":
-		// Do nothing
-	case "VOICE_CHANNEL_STATUS_UPDATE":
-		// Do nothing
 	case "INTERACTION_CREATE":
 		interactionData := InteractionData{}
 		json.Unmarshal(payload.D, &interactionData)
 		switch interactionData.Data.Name {
 		case "play":
-			go play(gw, ctx, interactionData)
+			gw.playCmd <- interactionData
 		case "stop":
-			go stop(gw, ctx, interactionData)
+			gw.stopCmd <- interactionData
 		default:
 			log.Println(
 				"unhandled interaction:",
 				interactionData.Data.Name)
 		}
+	case "VOICE_CHANNEL_EFFECT_SEND":
+		// Do nothing
+	case "RESUMED":
+		// Do nothing
+	case "VOICE_CHANNEL_STATUS_UPDATE":
+		// Do nothing
 	default:
 		log.Println("unhandled dispatch:", payload.T)
 	}
 	return nil
 }
 
-func getGuildState(gw *Gateway, guildId string) (*GuildState, bool) {
+func getGuildState(gw *Gateway, guildId string) (*guildState, bool) {
 	gw.guildStatesLock.Lock()
 	defer gw.guildStatesLock.Unlock()
 	guild, ok := gw.guildStates[guildId]
 	return guild, ok
 }
 
-func startVoiceGw(guild *GuildState, botAppId string, ctx context.Context) {
+func startVoiceGw(guild *guildState, botAppId string, ctx context.Context) {
 	// Close voice gw if not already closed
 	if guild.voiceGw != nil {
 		guild.voiceGw.Close(ctx)
@@ -590,12 +596,12 @@ func startVoiceGw(guild *GuildState, botAppId string, ctx context.Context) {
 	guild.freshTokEnd = false
 
 	go func() {
-		connCtx, connCancel := context.WithTimeout(ctx, ConnectVoiceTimeout)
+		connCtx, connCancel := context.WithTimeout(ctx, connectVoiceTimeout)
 		defer connCancel()
 
 		// Create voice gateway
 		var err error
-		guild.voiceGw, err = VoiceConnect(
+		guild.voiceGw, err = voiceConnect(
 			connCtx,
 			botAppId,
 			guild.guildId,
@@ -621,7 +627,7 @@ func startVoiceGw(guild *GuildState, botAppId string, ctx context.Context) {
 	}()
 }
 
-func startVoiceUdp(voiceGw *VoiceGateway, ctx context.Context, voicePaks <-chan []byte, deadVoiceGW <-chan bool) {
+func startVoiceUdp(voiceGw *voiceGateway, ctx context.Context, voicePaks <-chan []byte, deadVoiceGW <-chan bool) {
 	// Open voice udp socket
 	url := fmt.Sprintf(
 		"%s:%d",
@@ -642,8 +648,8 @@ func startVoiceUdp(voiceGw *VoiceGateway, ctx context.Context, voicePaks <-chan 
 	// https://github.com/bwmarrin/discordgo
 	// https://discord.com/developers/docs/topics/
 	// voice-connections#encrypting-and-sending-voice
-	nonce := [NonceLen]byte{}
-	header := make([]byte, RTPHeaderLen)
+	nonce := [nonceLen]byte{}
+	header := make([]byte, rtpHeaderLen)
 	header[0] = 0x80
 	header[1] = 0x78
 	binary.BigEndian.PutUint32(header[8:], voiceGw.ssrc)
@@ -676,7 +682,7 @@ func startVoiceUdp(voiceGw *VoiceGateway, ctx context.Context, voicePaks <-chan 
 	}
 }
 
-func notifyJoin(guild *GuildState, channelId *string) {
+func notifyJoin(guild *guildState, channelId *string) {
 	// Do a non-blocking write to the Guild notification
 	// channel for any listening JoinChannel coroutines
 	select {
@@ -697,8 +703,8 @@ func isIdEqual(id1 *string, id2 *string) bool {
 	return false
 }
 
-func heartbeat(gw *Gateway, ctx context.Context) error {
-	heartbeat := gatewaySend{Op: Heartbeat}
+func gwHeartbeat(gw *Gateway, ctx context.Context) error {
+	heartbeat := gatewaySend{Op: heartbeat}
 	for {
 		heartbeat.D, _ = json.Marshal(gw.lastSeq)
 		if err := send(gw.ws, ctx, &heartbeat); err != nil {
@@ -714,7 +720,7 @@ func heartbeat(gw *Gateway, ctx context.Context) error {
 }
 
 func read(c *websocket.Conn, ctx context.Context, payload *gatewayRead) error {
-	ctx, cancel := context.WithTimeout(ctx, DefaultTimeout)
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
 	defer cancel()
 	_, raw, err := c.Read(ctx)
 	if err != nil {
@@ -724,20 +730,20 @@ func read(c *websocket.Conn, ctx context.Context, payload *gatewayRead) error {
 	payload.T = ""
 	payload.D = nil
 	json.Unmarshal(raw, payload) // Unhandled err
-	if payload.Op != HeartbeatAck {
+	if payload.Op != heartbeatAck {
 		log.Printf("read: op: %s s: %d t: %s\n",
-			OpcodeNames[payload.Op], payload.S, payload.T)
+			opcodeNames[payload.Op], payload.S, payload.T)
 	}
 	return err
 }
 
 func send(c *websocket.Conn, ctx context.Context, payload *gatewaySend) error {
 	encoded, _ := json.Marshal(payload)
-	ctx, cancel := context.WithTimeout(ctx, DefaultTimeout)
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
 	defer cancel()
 	err := c.Write(ctx, websocket.MessageText, encoded)
-	if payload.Op != opcode(Heartbeat) {
-		log.Println("send: op:", OpcodeNames[payload.Op])
+	if payload.Op != opcode(heartbeat) {
+		log.Println("send: op:", opcodeNames[payload.Op])
 	}
 	return err
 }

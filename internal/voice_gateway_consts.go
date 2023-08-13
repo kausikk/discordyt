@@ -9,65 +9,65 @@ import (
 type voiceopcode int8
 
 const (
-	VoiceIdentify voiceopcode = iota
-	VoiceSelectPrtcl
-	VoiceReady
-	VoiceHeartbeat
-	VoiceSessDesc
-	VoiceSpeaking
-	VoiceHeartbeatAck
-	VoiceResume
-	VoiceHello
-	VoiceResumed
-	VoiceClientDiscon voiceopcode = 13
+	voiceIdentify voiceopcode = iota
+	voiceSelectPrtcl
+	voiceReady
+	voiceHeartbeat
+	voiceSessDesc
+	voiceSpeaking
+	voiceHeartbeatAck
+	voiceResume
+	voiceHello
+	voiceResumed
+	voiceClientDiscon voiceopcode = 13
 )
 
-var VoiceOpcodeNames = map[voiceopcode]string{
-	VoiceIdentify:     "IDENTIFY",
-	VoiceSelectPrtcl:  "SELECT_PROTOCOL",
-	VoiceReady:        "READY",
-	VoiceHeartbeat:    "HEARTBEAT",
-	VoiceSessDesc:     "SESSION_DESCRIPTION",
-	VoiceSpeaking:     "SPEAKING",
-	VoiceHeartbeatAck: "HEARTBEAT_ACK",
-	VoiceResume:       "RESUME",
-	VoiceHello:        "HELLO",
-	VoiceResumed:      "RESUMED",
-	VoiceClientDiscon: "CLIENT_DISCONNECT",
+var voiceOpcodeNames = map[voiceopcode]string{
+	voiceIdentify:     "IDENTIFY",
+	voiceSelectPrtcl:  "SELECT_PROTOCOL",
+	voiceReady:        "READY",
+	voiceHeartbeat:    "HEARTBEAT",
+	voiceSessDesc:     "SESSION_DESCRIPTION",
+	voiceSpeaking:     "SPEAKING",
+	voiceHeartbeatAck: "HEARTBEAT_ACK",
+	voiceResume:       "RESUME",
+	voiceHello:        "HELLO",
+	voiceResumed:      "RESUMED",
+	voiceClientDiscon: "CLIENT_DISCONNECT",
 }
 
 const (
-	StatusVoiceGwUnknownOp websocket.StatusCode = iota + 4001
-	StatusVoiceGwDecodeErr
-	StatusVoiceGwNotAuthd
-	StatusVoiceGwAuthFailed
-	StatusVoiceGwAlreadyAuthd
-	StatusVoiceGwInvldSess
+	statusVoiceGwUnknownOp websocket.StatusCode = iota + 4001
+	statusVoiceGwDecodeErr
+	statusVoiceGwNotAuthd
+	statusVoiceGwAuthFailed
+	statusVoiceGwAlreadyAuthd
+	statusVoiceGwInvldSess
 	_
 	_
-	StatusVoiceGwSessTimeout
+	statusVoiceGwSessTimeout
 	_
-	StatusVoiceGwSrvNotFound
-	StatusVoiceGwUnknownPrtcl
+	statusVoiceGwSrvNotFound
+	statusVoiceGwUnknownPrtcl
 	_
-	StatusVoiceGwDisconnect
-	StatusVoiceGwServerCrash
-	StatusVoiceGwUnknownEncy
+	statusVoiceGwDisconnect
+	statusVoiceGwServerCrash
+	statusVoiceGwUnknownEncy
 )
 
-var VoiceValidResumeCodes = map[websocket.StatusCode]bool{
-	StatusVoiceGwUnknownOp:    true,
-	StatusVoiceGwDecodeErr:    true,
-	StatusVoiceGwNotAuthd:     true,
-	StatusVoiceGwAuthFailed:   false,
-	StatusVoiceGwAlreadyAuthd: true,
-	StatusVoiceGwInvldSess:    false,
-	StatusVoiceGwSessTimeout:  false,
-	StatusVoiceGwSrvNotFound:  false,
-	StatusVoiceGwUnknownPrtcl: true,
-	StatusVoiceGwDisconnect:   false,
-	StatusVoiceGwServerCrash:  true,
-	StatusVoiceGwUnknownEncy:  true,
+var voiceValidResumeCodes = map[websocket.StatusCode]bool{
+	statusVoiceGwUnknownOp:    true,
+	statusVoiceGwDecodeErr:    true,
+	statusVoiceGwNotAuthd:     true,
+	statusVoiceGwAuthFailed:   false,
+	statusVoiceGwAlreadyAuthd: true,
+	statusVoiceGwInvldSess:    false,
+	statusVoiceGwSessTimeout:  false,
+	statusVoiceGwSrvNotFound:  false,
+	statusVoiceGwUnknownPrtcl: true,
+	statusVoiceGwDisconnect:   false,
+	statusVoiceGwServerCrash:  true,
+	statusVoiceGwUnknownEncy:  true,
 	// Custom
 	websocket.StatusNormalClosure:  false,
 	websocket.StatusServiceRestart: true,
@@ -106,7 +106,7 @@ type voiceSelectPrtclSubData struct {
 	Mode string `json:"mode"`
 }
 
-type voiceSessDesc struct {
+type voiceSessionDesc struct {
 	Mode      string          `json:"mode"`
 	SecretKey json.RawMessage `json:"secret_key"`
 }

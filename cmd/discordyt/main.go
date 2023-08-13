@@ -27,10 +27,10 @@ func main() {
 	signal.Notify(sigint, os.Interrupt)
 
 	// Start gateway
-	ctx, cancel := context.WithCancel(context.Background())
+	rootctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	gw, err := internal.Connect(
-		ctx,
+		rootctx,
 		config["BOT_TOKEN"],
 		config["BOT_APP_ID"],
 		config["BOT_PUBLIC_KEY"],
@@ -42,10 +42,10 @@ func main() {
 
 	// Start Listen/Reconnect loop
 	go func() {
-		for ctx.Err() == nil {
-			err = gw.Listen(ctx)
+		for rootctx.Err() == nil {
+			err = gw.Listen(rootctx)
 			log.Println("restart gateway:", err)
-			err = gw.Reconnect(ctx)
+			err = gw.Reconnect(rootctx)
 			if err != nil {
 				log.Println("gateway connect failed:", err)
 				break
@@ -53,8 +53,35 @@ func main() {
 		}
 	}()
 
+	// Start play loop
+	go func() {
+		for {
+			select {
+			case data := <-gw.PlayCmd():
+				go play(
+					gw, rootctx, data,
+					config["BOT_APP_ID"], config["SONG_FOLDER"],
+				)
+			case <-rootctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Start stop loop {
+	go func() {
+		for {
+			select {
+			case data := <-gw.StopCmd():
+				go stop(gw, rootctx, data)
+			case <-rootctx.Done():
+				return
+			}
+		}
+	}()
+
 	// Wait for sig int
 	<-sigint
 	log.Println("captured sigint")
-	gw.Close(ctx)
+	gw.Close(rootctx)
 }

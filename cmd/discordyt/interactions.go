@@ -1,4 +1,4 @@
-package internal
+package main
 
 import (
 	"bytes"
@@ -10,41 +10,43 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/kausikk/discordyt/internal"
 )
 
-const DiscordApi = "https://discord.com/api"
+const discordApi = "https://discord.com/api"
 
-type InteractionRespType int64
+type interactionRespType int64
 
 const (
-	Pong InteractionRespType = iota + 1
+	pong interactionRespType = iota + 1
 	_
 	_
-	ChannelMessageWithSource
-	DeferredChannelMessageWithSource
-	DeferredUpdateMsg
-	UpdateMessage
-	ApplicationCommandAutocompleteResult
-	Modal
+	channelMessageWithSource
+	deferredChannelMessageWithSource
+	deferredUpdateMsg
+	updateMessage
+	applicationCommandAutocompleteResult
+	modal
 )
 
-func play(gw *Gateway, rootctx context.Context, data InteractionData) {
+func play(gw *internal.Gateway, rootctx context.Context, data internal.InteractionData, botAppId, songFolder string) {
 	// Check if user is in a channel
 	chnl, ok := gw.GetUserChannel(data.GuildId, data.Member.User.Id)
 	if !ok || chnl == "" {
 		postResp(
 			data.Id, data.Token,
 			"User is not in a channel (try re-joining)",
-			ChannelMessageWithSource,
+			channelMessageWithSource,
 		)
 		return
 	}
 
 	songId := data.Data.Options[0].Value
-	songPath := gw.songFolder + "/" + songId + ".opus"
+	songPath := songFolder + "/" + songId + ".opus"
 	postResp(
 		data.Id, data.Token, "Finding song...",
-		DeferredChannelMessageWithSource,
+		deferredChannelMessageWithSource,
 	)
 
 	// Check if file already exists
@@ -53,7 +55,7 @@ func play(gw *Gateway, rootctx context.Context, data InteractionData) {
 		log.Println("downloading", songId)
 
 		// Download from youtube with yt-dlp
-		err := ytdlpCmd(gw.songFolder, songId)
+		err := ytdlpCmd(songFolder, songId)
 		if err != nil {
 			log.Println("yt-dlp err:", err)
 			msg := "No suitable format available for " + songId
@@ -61,29 +63,29 @@ func play(gw *Gateway, rootctx context.Context, data InteractionData) {
 				msg = "Failed to download " + songId
 			}
 			patchResp(
-				gw.botAppId, data.Token, msg,
+				botAppId, data.Token, msg,
 			)
 			return
 		}
 
 		// Convert to opus file
-		err = ffmpegCmd(gw.songFolder + "/" + songId)
+		err = ffmpegCmd(songFolder + "/" + songId)
 		if err != nil {
 			log.Println("ffmpeg err:", err)
 			patchResp(
-				gw.botAppId, data.Token,
+				botAppId, data.Token,
 				"Failed to convert "+songId,
 			)
 			return
 		}
 
 		// Delete .webm file
-		os.Remove(gw.songFolder + "/" + songId + ".webm")
+		os.Remove(songFolder + "/" + songId + ".webm")
 
 		// Check that file exists
 		if !checkExists(songPath) {
 			patchResp(
-				gw.botAppId, data.Token,
+				botAppId, data.Token,
 				"Failed to download "+songId,
 			)
 			return
@@ -109,12 +111,12 @@ func play(gw *Gateway, rootctx context.Context, data InteractionData) {
 		} else {
 			msg = "Could not join channel"
 		}
-		patchResp(gw.botAppId, data.Token, msg)
+		patchResp(botAppId, data.Token, msg)
 		return
 	}
 
 	patchResp(
-		gw.botAppId, data.Token,
+		botAppId, data.Token,
 		"Playing "+songId,
 	)
 
@@ -130,20 +132,20 @@ func play(gw *Gateway, rootctx context.Context, data InteractionData) {
 	log.Println("done playing", songId)
 }
 
-func stop(gw *Gateway, rootctx context.Context, data InteractionData) {
+func stop(gw *internal.Gateway, rootctx context.Context, data internal.InteractionData) {
 	log.Println("stopping", data.GuildId)
 	gw.StopAudio(rootctx, data.GuildId)
 	postResp(
 		data.Id, data.Token, "Stopped",
-		ChannelMessageWithSource,
+		channelMessageWithSource,
 	)
 }
 
-func postResp(id, token, msg string, intType InteractionRespType) error {
+func postResp(id, token, msg string, intType interactionRespType) error {
 	resp, err := http.Post(
 		fmt.Sprintf(
 			"%s/interactions/%s/%s/callback",
-			DiscordApi, id, token,
+			discordApi, id, token,
 		),
 		"application/json",
 		bytes.NewBufferString(fmt.Sprintf(
@@ -163,7 +165,7 @@ func patchResp(id, token, msg string) error {
 		"PATCH",
 		fmt.Sprintf(
 			"%s/webhooks/%s/%s/messages/@original",
-			DiscordApi, id, token,
+			discordApi, id, token,
 		),
 		bytes.NewBufferString(fmt.Sprintf(
 			`{"content":"%s"}`, msg,

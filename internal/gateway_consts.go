@@ -10,71 +10,71 @@ type opcode int8
 
 // https://discord.com/developers/docs/topics/opcodes-and-status-codes
 const (
-	Dispatch opcode = iota
-	Heartbeat
-	Identify
-	PresenceUpdate
-	VoiceStateUpdate
+	dispatch opcode = iota
+	heartbeat
+	identify
+	presenceUpdate
+	voiceStateUpdate
 	_
-	Resume
-	Reconnect
-	RequestGuildMem
-	InvalidSession
-	Hello
-	HeartbeatAck
+	resume
+	reconnect
+	requestGuildMem
+	invalidSession
+	hello
+	heartbeatAck
 )
 
-var OpcodeNames = map[opcode]string{
-	Dispatch:         "DISPATCH",
-	Heartbeat:        "HEARTBEAT",
-	Identify:         "IDENTIFY",
-	PresenceUpdate:   "PRESENCE_UPDATE",
-	VoiceStateUpdate: "VOICE_STATE_UPDATE",
-	Resume:           "RESUME",
-	Reconnect:        "RECONNECT",
-	RequestGuildMem:  "REQUEST_GUILD_MEM",
-	InvalidSession:   "INVALID_SESSION",
-	Hello:            "HELLO",
-	HeartbeatAck:     "HEARTBEAT_ACK",
+var opcodeNames = map[opcode]string{
+	dispatch:         "DISPATCH",
+	heartbeat:        "HEARTBEAT",
+	identify:         "IDENTIFY",
+	presenceUpdate:   "PRESENCE_UPDATE",
+	voiceStateUpdate: "VOICE_STATE_UPDATE",
+	resume:           "RESUME",
+	reconnect:        "RECONNECT",
+	requestGuildMem:  "REQUEST_GUILD_MEM",
+	invalidSession:   "INVALID_SESSION",
+	hello:            "HELLO",
+	heartbeatAck:     "HEARTBEAT_ACK",
 }
 
 const (
-	StatusGatewayUnknownErr websocket.StatusCode = iota + 4000
-	StatusGatewayUnknownOp
-	StatusGatewayDecodeErr
-	StatusGatewayNotAuthd
-	StatusGatewayAuthFailed
-	StatusGatewayAlreadyAuthd
+	statusGatewayUnknownErr websocket.StatusCode = iota + 4000
+	statusGatewayUnknownOp
+	statusGatewayDecodeErr
+	statusGatewayNotAuthd
+	statusGatewayAuthFailed
+	statusGatewayAlreadyAuthd
 	_
-	StatusGatewayInvldSeq
-	StatusGatewayRateLimited
-	StatusGatewaySessTimeout
-	StatusGatewayInvldShard
-	StatusGatewayShardRequired
-	StatusGatewayInvldVers
-	StatusGatewayInvldIntents
-	StatusGatewayDisallowedIntents
-	StatusGatewayInvalidSession websocket.StatusCode = 4024
+	statusGatewayInvldSeq
+	statusGatewayRateLimited
+	statusGatewaySessTimeout
+	statusGatewayInvldShard
+	statusGatewayShardRequired
+	statusGatewayInvldVers
+	statusGatewayInvldIntents
+	statusGatewayDisallowedIntents
+	statusGatewayInvalidSession websocket.StatusCode = 4024
 )
 
-var ValidResumeCodes = map[websocket.StatusCode]bool{
-	StatusGatewayUnknownErr:        true,
-	StatusGatewayUnknownOp:         true,
-	StatusGatewayDecodeErr:         true,
-	StatusGatewayNotAuthd:          true,
-	StatusGatewayAuthFailed:        false,
-	StatusGatewayAlreadyAuthd:      true,
-	StatusGatewayInvldSeq:          true,
-	StatusGatewayRateLimited:       true,
-	StatusGatewaySessTimeout:       true,
-	StatusGatewayInvldShard:        false,
-	StatusGatewayShardRequired:     false,
-	StatusGatewayInvldVers:         false,
-	StatusGatewayInvldIntents:      false,
-	StatusGatewayDisallowedIntents: false,
+var validResumeCodes = map[websocket.StatusCode]bool{
+	statusGatewayUnknownErr:        true,
+	statusGatewayUnknownOp:         true,
+	statusGatewayDecodeErr:         true,
+	statusGatewayNotAuthd:          true,
+	statusGatewayAuthFailed:        false,
+	statusGatewayAlreadyAuthd:      true,
+	statusGatewayInvldSeq:          true,
+	statusGatewayRateLimited:       true,
+	statusGatewaySessTimeout:       true,
+	statusGatewayInvldShard:        false,
+	statusGatewayShardRequired:     false,
+	statusGatewayInvldVers:         false,
+	statusGatewayInvldIntents:      false,
+	statusGatewayDisallowedIntents: false,
 	// Custom
 	websocket.StatusServiceRestart: true,
-	StatusGatewayInvalidSession:    false,
+	statusGatewayInvalidSession:    false,
 	websocket.StatusNormalClosure:  false,
 	websocket.StatusGoingAway:      false,
 }

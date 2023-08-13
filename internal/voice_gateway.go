@@ -9,11 +9,11 @@ import (
 	"nhooyr.io/websocket"
 )
 
-var CachedSelectPrtcl = voiceGwPayload{
-	Op: VoiceSelectPrtcl,
-	D:  CachedSelectPrtclData,
+var cachedSelectPrtcl = voiceGwPayload{
+	Op: voiceSelectPrtcl,
+	D:  cachedSelectPrtclData,
 }
-var CachedSelectPrtclData, _ = json.Marshal(voiceSelectPrtclData{
+var cachedSelectPrtclData, _ = json.Marshal(voiceSelectPrtclData{
 	Protocol: "udp",
 	Data: voiceSelectPrtclSubData{
 		Addr: "127.0.0.1",
@@ -22,22 +22,22 @@ var CachedSelectPrtclData, _ = json.Marshal(voiceSelectPrtclData{
 	},
 })
 
-var CachedHeartbeat = voiceGwPayload{
-	Op: VoiceHeartbeat,
+var cachedHeartbeat = voiceGwPayload{
+	Op: voiceHeartbeat,
 	// Voice nonce = 123403290
 	D: []byte{49, 50, 51, 52, 48, 51, 50, 57, 48},
 }
 
-type VoiceGatewayState int8
+type voiceGatewayState int8
 
 const (
-	VGwClosed VoiceGatewayState = iota
-	VGwReady
-	VGwResuming
+	vGwClosed voiceGatewayState = iota
+	vGwReady
+	vGwResuming
 )
 
-type VoiceGateway struct {
-	State         VoiceGatewayState
+type voiceGateway struct {
+	state         voiceGatewayState
 	botAppId      string
 	guildId       string
 	sessionId     string
@@ -53,12 +53,12 @@ type VoiceGateway struct {
 	timestamp     uint32
 }
 
-func VoiceConnect(rootctx context.Context, botAppId, guildId, sessionId, token, endpoint string) (*VoiceGateway, error) {
+func voiceConnect(rootctx context.Context, botAppId, guildId, sessionId, token, endpoint string) (*voiceGateway, error) {
 	var err error
 	payload := voiceGwPayload{}
 
 	// Init gateway
-	voiceGw := VoiceGateway{
+	voiceGw := voiceGateway{
 		botAppId:  botAppId,
 		guildId:   guildId,
 		sessionId: sessionId,
@@ -67,14 +67,14 @@ func VoiceConnect(rootctx context.Context, botAppId, guildId, sessionId, token, 
 	}
 
 	// Connect to Discord websocket
-	dialCtx, dialCancel := context.WithTimeout(rootctx, DefaultTimeout)
+	dialCtx, dialCancel := context.WithTimeout(rootctx, defaultTimeout)
 	voiceGw.ws, _, err = websocket.Dial(dialCtx, voiceGw.endpoint, nil)
 	dialCancel()
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
-		if voiceGw.State == VGwClosed {
+		if voiceGw.state == vGwClosed {
 			voiceGw.ws.Close(websocket.StatusInternalError, "")
 		}
 	}()
@@ -96,7 +96,7 @@ func VoiceConnect(rootctx context.Context, botAppId, guildId, sessionId, token, 
 		SessionId: voiceGw.sessionId,
 		Token:     voiceGw.token,
 	}
-	payload.Op = VoiceIdentify
+	payload.Op = voiceIdentify
 	payload.D, _ = json.Marshal(&idData)
 	if err = vSend(voiceGw.ws, rootctx, &payload); err != nil {
 		return nil, err
@@ -115,35 +115,35 @@ func VoiceConnect(rootctx context.Context, botAppId, guildId, sessionId, token, 
 	voiceGw.port = readyData.Port
 
 	// Send SELECT PROTOCOL event
-	if err = vSend(voiceGw.ws, rootctx, &CachedSelectPrtcl); err != nil {
+	if err = vSend(voiceGw.ws, rootctx, &cachedSelectPrtcl); err != nil {
 		return nil, err
 	}
 
 	// Receive description
 	// Sometimes opcodes 18, 20 (unknown), or 5 (speaking) are sent
-	for payload.Op != VoiceSessDesc {
+	for payload.Op != voiceSessDesc {
 		if err = vRead(voiceGw.ws, rootctx, &payload); err != nil {
 			return nil, err
 		}
 	}
-	sessData := voiceSessDesc{}
+	sessData := voiceSessionDesc{}
 	json.Unmarshal(payload.D, &sessData)
 
 	// Store secret key
 	json.Unmarshal(sessData.SecretKey, &voiceGw.secretKey)
 
 	// Change to READY state
-	voiceGw.State = VGwReady
+	voiceGw.state = vGwReady
 	return &voiceGw, nil
 }
 
-func (voiceGw *VoiceGateway) Listen(rootctx context.Context) error {
+func (voiceGw *voiceGateway) Listen(rootctx context.Context) error {
 	var err error
 	payload := voiceGwPayload{}
 
 	// If resume loop ends, close gateway
 	defer func() {
-		voiceGw.State = VGwClosed
+		voiceGw.state = vGwClosed
 		voiceGw.ws.Close(websocket.StatusNormalClosure, "")
 	}()
 
@@ -151,7 +151,7 @@ func (voiceGw *VoiceGateway) Listen(rootctx context.Context) error {
 	for {
 		// Start heartbeat
 		gwCtx, gwCancel := context.WithCancel(rootctx)
-		go voiceHeartbeat(voiceGw, gwCtx)
+		go voiceGwHeartbeat(voiceGw, gwCtx)
 
 		// Enter read loop
 		keepReading := true
@@ -164,22 +164,22 @@ func (voiceGw *VoiceGateway) Listen(rootctx context.Context) error {
 
 			// Handle event according to opcode
 			switch payload.Op {
-			case VoiceHeartbeat:
+			case voiceHeartbeat:
 				// Send heartbeat
-				err = vSend(voiceGw.ws, gwCtx, &CachedHeartbeat)
+				err = vSend(voiceGw.ws, gwCtx, &cachedHeartbeat)
 				if err != nil {
 					keepReading = false
 				}
-			case VoiceResumed:
+			case voiceResumed:
 				// Do nothing
-			case VoiceSessDesc:
+			case voiceSessDesc:
 				// Do nothing
 			}
 		}
 
 		// Change to Resuming state
 		// Cancel all child tasks
-		voiceGw.State = VGwResuming
+		voiceGw.state = vGwResuming
 		gwCancel()
 
 		// If root ctx cancelled, dont attempt resume
@@ -190,7 +190,7 @@ func (voiceGw *VoiceGateway) Listen(rootctx context.Context) error {
 		// Check if gateway can be resumed
 		status := websocket.CloseStatus(err)
 		log.Printf("voice close code: %d\n", status)
-		canResume, exists := VoiceValidResumeCodes[status]
+		canResume, exists := voiceValidResumeCodes[status]
 		if !canResume && exists {
 			log.Println("voice can't resume")
 			return err
@@ -201,7 +201,7 @@ func (voiceGw *VoiceGateway) Listen(rootctx context.Context) error {
 
 		// Connect to resume url
 		dialCtx, dialCancel := context.WithTimeout(
-			rootctx, DefaultTimeout)
+			rootctx, defaultTimeout)
 		voiceGw.ws, _, err = websocket.Dial(dialCtx, voiceGw.endpoint, nil)
 		dialCancel()
 		if err != nil {
@@ -224,18 +224,18 @@ func (voiceGw *VoiceGateway) Listen(rootctx context.Context) error {
 			SessionId: voiceGw.sessionId,
 			Token:     voiceGw.token,
 		}
-		payload.Op = VoiceResume
+		payload.Op = voiceResume
 		payload.D, _ = json.Marshal(&resumeData)
 		if err = vSend(voiceGw.ws, rootctx, &payload); err != nil {
 			return err
 		}
 
 		// Change to READY state
-		voiceGw.State = VGwReady
+		voiceGw.state = vGwReady
 	}
 }
 
-func (voiceGw *VoiceGateway) Speaking(rootctx context.Context, isSpeak bool) error {
+func (voiceGw *voiceGateway) Speaking(rootctx context.Context, isSpeak bool) error {
 	val := int64(1)
 	if !isSpeak {
 		val = 0
@@ -246,21 +246,21 @@ func (voiceGw *VoiceGateway) Speaking(rootctx context.Context, isSpeak bool) err
 		Ssrc:     voiceGw.ssrc,
 	})
 	payload := voiceGwPayload{
-		Op: VoiceSpeaking,
+		Op: voiceSpeaking,
 		D:  data,
 	}
 	return vSend(voiceGw.ws, rootctx, &payload)
 }
 
-func (voiceGw *VoiceGateway) Close(rootctx context.Context) error {
-	voiceGw.State = VGwClosed
+func (voiceGw *voiceGateway) Close(rootctx context.Context) error {
+	voiceGw.state = vGwClosed
 	voiceGw.ws.Close(websocket.StatusNormalClosure, "")
 	return nil
 }
 
-func voiceHeartbeat(voiceGw *VoiceGateway, ctx context.Context) error {
+func voiceGwHeartbeat(voiceGw *voiceGateway, ctx context.Context) error {
 	for {
-		if err := vSend(voiceGw.ws, ctx, &CachedHeartbeat); err != nil {
+		if err := vSend(voiceGw.ws, ctx, &cachedHeartbeat); err != nil {
 			return err
 		}
 		select {
@@ -273,26 +273,26 @@ func voiceHeartbeat(voiceGw *VoiceGateway, ctx context.Context) error {
 }
 
 func vRead(c *websocket.Conn, ctx context.Context, payload *voiceGwPayload) error {
-	ctx, cancel := context.WithTimeout(ctx, DefaultTimeout)
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
 	defer cancel()
 	_, raw, err := c.Read(ctx)
 	if err != nil {
 		return err
 	}
 	json.Unmarshal(raw, payload) // Unhandled err
-	if payload.Op != VoiceHeartbeatAck {
-		log.Println("voice read: op:", VoiceOpcodeNames[payload.Op])
+	if payload.Op != voiceHeartbeatAck {
+		log.Println("voice read: op:", voiceOpcodeNames[payload.Op])
 	}
 	return err
 }
 
 func vSend(c *websocket.Conn, ctx context.Context, payload *voiceGwPayload) error {
 	encoded, _ := json.Marshal(payload)
-	ctx, cancel := context.WithTimeout(ctx, DefaultTimeout)
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
 	defer cancel()
 	err := c.Write(ctx, websocket.MessageText, encoded)
-	if payload.Op != VoiceHeartbeat {
-		log.Println("voice send: op:", VoiceOpcodeNames[payload.Op])
+	if payload.Op != voiceHeartbeat {
+		log.Println("voice send: op:", voiceOpcodeNames[payload.Op])
 	}
 	return err
 }

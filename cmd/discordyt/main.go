@@ -9,7 +9,7 @@ import (
 	"os/signal"
 )
 
-const VERSION = "v0.1"
+const VERSION = "v0.1.1"
 
 func main() {
 	// Read env variables

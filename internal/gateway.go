@@ -21,6 +21,8 @@ import (
 const DiscordWSS = "wss://gateway.discord.gg"
 const DefaultTimeout = 2 * time.Minute
 const ConnectVoiceTimeout = 10 * time.Second
+const JoinChannelTimeout = 10 * time.Second
+const VoicePacketTimeout = 5 * time.Second
 
 // Connect voice permission (1 << 20) ||
 // Speak voice permission (1 << 21) ||
@@ -58,7 +60,9 @@ const PacketBurst = 10
 // Technically this should be 20 ms, but made it slightly
 // shorter for better audio continuity
 const PacketDuration = 19700 * time.Microsecond
-const VoicePacketTimeout = 5 * time.Second
+
+// Size of buffer channel for sending commands
+const cmbBufLen = 1000
 
 type GatewayState int8
 
@@ -69,14 +73,16 @@ const (
 )
 
 type Gateway struct {
-	State           GatewayState
+	state           GatewayState
 	botToken        string
 	botAppId        string
 	botPublicKey    string
 	songFolder      string
-	UserOccupancy   cmap.ConcurrentMap[string, string]
+	userOccupancy   cmap.ConcurrentMap[string, string]
 	guildStatesLock sync.Mutex
 	guildStates     map[string]*GuildState
+	playCmd         chan InteractionData
+	stopCmd         chan InteractionData
 	ws              *websocket.Conn
 	lastSeq         int64
 	resumeUrl       string
@@ -93,7 +99,8 @@ type GuildState struct {
 	freshTokEnd   bool
 	freshChnlSess bool
 	voiceGw       *VoiceGateway
-	lock          chan bool
+	joinLock      chan bool
+	playLock      chan bool
 	joinedChnl    chan *string
 	voicePaks     chan []byte
 }
@@ -105,8 +112,10 @@ func Connect(rootctx context.Context, botToken, botAppId, botPublicKey, songFold
 		botAppId:      botAppId,
 		botPublicKey:  botPublicKey,
 		songFolder:    songFolder,
-		UserOccupancy: cmap.New[string](),
+		userOccupancy: cmap.New[string](),
 		guildStates:   make(map[string]*GuildState),
+		playCmd:       make(chan InteractionData, cmbBufLen),
+		stopCmd:       make(chan InteractionData, cmbBufLen),
 	}
 	err := gw.Reconnect(rootctx)
 	return &gw, err
@@ -125,7 +134,7 @@ func (gw *Gateway) Reconnect(rootctx context.Context) error {
 		return err
 	}
 	defer func() {
-		if gw.State == GwClosed {
+		if gw.state == GwClosed {
 			gw.ws.Close(websocket.StatusInternalError, "")
 		}
 	}()
@@ -168,7 +177,7 @@ func (gw *Gateway) Reconnect(rootctx context.Context) error {
 	gw.lastSeq = readPayload.S
 
 	// Change to READY state
-	gw.State = GwReady
+	gw.state = GwReady
 	return nil
 }
 
@@ -179,7 +188,7 @@ func (gw *Gateway) Listen(rootctx context.Context) error {
 
 	// If resume loop ends, close gateway
 	defer func() {
-		gw.State = GwClosed
+		gw.state = GwClosed
 		gw.ws.Close(websocket.StatusNormalClosure, "")
 	}()
 
@@ -230,7 +239,7 @@ func (gw *Gateway) Listen(rootctx context.Context) error {
 
 		// Change to Resuming state
 		// Cancel heartbeat
-		gw.State = GwResuming
+		gw.state = GwResuming
 		hbCancel()
 
 		// If root ctx cancelled, dont attempt resume
@@ -282,7 +291,7 @@ func (gw *Gateway) Listen(rootctx context.Context) error {
 		}
 
 		// Change to READY state
-		gw.State = GwReady
+		gw.state = GwReady
 	}
 }
 
@@ -299,8 +308,10 @@ func (gw *Gateway) JoinChannel(rootctx context.Context, guildId string, channelI
 	if !ok {
 		guild = &GuildState{}
 		guild.guildId = guildId
-		guild.lock = make(chan bool, 1)
-		guild.lock <- true
+		guild.joinLock = make(chan bool, 1)
+		guild.joinLock <- true
+		guild.playLock = make(chan bool, 1)
+		guild.playLock <- true
 		guild.joinedChnl = make(chan *string)
 		guild.voicePaks = make(chan []byte)
 		gw.guildStates[guildId] = guild
@@ -310,12 +321,12 @@ func (gw *Gateway) JoinChannel(rootctx context.Context, guildId string, channelI
 	// Lock guild to prevent JoinChannel()
 	// from executing in another thread
 	select {
-	case <-guild.lock:
+	case <-guild.joinLock:
 		// Obtained lock
 	case <-rootctx.Done():
 		return errors.New("could not lock")
 	}
-	defer func() { guild.lock <- true }()
+	defer func() { guild.joinLock <- true }()
 
 	// Send a voice state update
 	payload := gatewaySend{Op: VoiceStateUpdate}
@@ -328,17 +339,23 @@ func (gw *Gateway) JoinChannel(rootctx context.Context, guildId string, channelI
 		return err
 	}
 
-	// Wait for channel join or context cancel
+	// Wait for channel join or context cancel/timeout
 	select {
 	case joinedId := <-guild.joinedChnl:
 		if !isIdEqual(joinedId, channelId) {
 			return errors.New("unable to join channel")
 		}
+	case <-time.After(JoinChannelTimeout):
+		return errors.New("channel join timeout")
 	case <-rootctx.Done():
 		return rootctx.Err()
 	}
 
 	return nil
+}
+
+func (gw *Gateway) GetUserChannel(guildId, userId string) (string, bool) {
+	return gw.userOccupancy.Get(guildId + userId)
 }
 
 func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) error {
@@ -358,12 +375,12 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 	// Lock guild to prevent PlayAudio()
 	// from executing in another thread
 	select {
-	case <-guild.lock:
+	case <-guild.playLock:
 		// Obtained lock
 	case <-rootctx.Done():
 		return errors.New("could not lock")
 	}
-	defer func() { guild.lock <- true }()
+	defer func() { guild.playLock <- true }()
 
 	// Open song
 	f, err := os.Open(song)
@@ -419,7 +436,7 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 				case guild.voicePaks <- packet:
 					// Do nothing
 				case <-time.After(VoicePacketTimeout):
-					return errors.New("timed out waiting to send packet")
+					return errors.New("packet send timeout")
 				case <-rootctx.Done():
 					return rootctx.Err()
 				}
@@ -450,8 +467,16 @@ func (gw *Gateway) StopAudio(rootctx context.Context, guildId string) error {
 	return send(gw.ws, rootctx, &payload)
 }
 
+func (gw *Gateway) PlayCmd(rootctx context.Context) <-chan InteractionData {
+	return gw.playCmd
+}
+
+func (gw *Gateway) StopCmd(rootctx context.Context) <-chan InteractionData {
+	return gw.stopCmd
+}
+
 func (gw *Gateway) Close(rootctx context.Context) {
-	gw.State = GwClosed
+	gw.state = GwClosed
 	gw.ws.Close(websocket.StatusNormalClosure, "")
 	gw.guildStatesLock.Lock()
 	defer gw.guildStatesLock.Unlock()
@@ -470,7 +495,7 @@ func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) erro
 		// Get channel, user, and guild
 		voiceData := voiceStateData{}
 		json.Unmarshal(payload.D, &voiceData)
-		gw.UserOccupancy.Set(
+		gw.userOccupancy.Set(
 			voiceData.GuildId+voiceData.UserId,
 			voiceData.ChannelId)
 		// Return if not related to bot

@@ -10,11 +10,9 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"time"
 )
 
 const DiscordApi = "https://discord.com/api"
-const JoinChannelTimeout = 10 * time.Second
 
 type InteractionRespType int64
 
@@ -32,7 +30,7 @@ const (
 
 func play(gw *Gateway, rootctx context.Context, data InteractionData) {
 	// Check if user is in a channel
-	chnl, ok := gw.UserOccupancy.Get(data.GuildId + data.Member.User.Id)
+	chnl, ok := gw.GetUserChannel(data.GuildId, data.Member.User.Id)
 	if !ok || chnl == "" {
 		postResp(
 			data.Id, data.Token,
@@ -101,9 +99,7 @@ func play(gw *Gateway, rootctx context.Context, data InteractionData) {
 	if *joinChnl == "" {
 		joinChnl = nil
 	}
-	ctx, cancel := context.WithTimeout(rootctx, JoinChannelTimeout)
-	defer cancel()
-	err := gw.JoinChannel(ctx, data.GuildId, joinChnl)
+	err := gw.JoinChannel(rootctx, data.GuildId, joinChnl)
 
 	if err != nil {
 		log.Println("play err:", err)
@@ -119,7 +115,7 @@ func play(gw *Gateway, rootctx context.Context, data InteractionData) {
 
 	patchResp(
 		gw.botAppId, data.Token,
-		"Playing song "+songId,
+		"Playing "+songId,
 	)
 
 	err = gw.PlayAudio(

@@ -408,9 +408,11 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 			return err
 		}
 		if discard < 2 {
-			s := sum(segTable[:tableLen])
-			temp := make([]byte, s)
-			_, err = io.ReadFull(f, temp)
+			var sum int64
+			for _, v := range segTable[:tableLen] {
+				sum += int64(v)
+			}
+			_, err := f.Seek(sum, io.SeekCurrent)
 			if err != nil {
 				return err
 			}
@@ -506,8 +508,6 @@ func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) erro
 		if voiceData.UserId != gw.botAppId {
 			return nil
 		}
-		log.Printf("voice state updt: guild: %s chnl: %s\n",
-			voiceData.GuildId, voiceData.ChannelId)
 		// I think guild state should always be init'd by the time
 		// this event is received, so ignore event if not init'd
 		guild, ok := getGuildState(gw, voiceData.GuildId)
@@ -535,8 +535,6 @@ func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) erro
 		// Get new voice server token and endpoint
 		serverData := voiceServerUpdateData{}
 		json.Unmarshal(payload.D, &serverData)
-		log.Printf("voice server updt: guild: %s token: %s url: %s\n",
-			serverData.GuildId, serverData.Token, serverData.Endpoint)
 		// I think guild state should always be init'd by the time
 		// this event is received, so ignore event if not init'd
 		guild, ok := getGuildState(gw, serverData.GuildId)
@@ -628,6 +626,8 @@ func startVoiceGw(guild *guildState, botAppId string, ctx context.Context) {
 }
 
 func startVoiceUdp(voiceGw *voiceGateway, ctx context.Context, voicePaks <-chan []byte, deadVoiceGW <-chan bool) {
+	defer log.Println("udp closed")
+
 	// Open voice udp socket
 	url := fmt.Sprintf(
 		"%s:%d",
@@ -746,12 +746,4 @@ func send(c *websocket.Conn, ctx context.Context, payload *gatewaySend) error {
 		log.Println("send: op:", opcodeNames[payload.Op])
 	}
 	return err
-}
-
-func sum(b []byte) int {
-	var sum int = 0
-	for _, v := range b {
-		sum += int(v)
-	}
-	return sum
 }

@@ -42,13 +42,18 @@ func main() {
 
 	// Start Listen/Reconnect loop
 	go func() {
-		for rootctx.Err() == nil {
-			err = gw.Listen(rootctx)
-			log.Println("restart gateway:", err)
-			err = gw.Reconnect(rootctx)
-			if err != nil {
-				log.Println("gateway connect failed:", err)
-				break
+		for {
+			select {
+			default:
+				err = gw.Listen(rootctx)
+				log.Println("restart gateway:", err)
+				err = gw.Reconnect(rootctx)
+				if err != nil {
+					log.Println("gateway connect failed:", err)
+					return
+				}
+			case <-rootctx.Done():
+				return
 			}
 		}
 	}()
@@ -60,7 +65,8 @@ func main() {
 			case data := <-gw.PlayCmd():
 				go play(
 					gw, rootctx, data,
-					config["BOT_APP_ID"], config["SONG_FOLDER"],
+					config["BOT_APP_ID"],
+					config["SONG_FOLDER"],
 				)
 			case <-rootctx.Done():
 				return
@@ -82,6 +88,6 @@ func main() {
 
 	// Wait for sig int
 	<-sigint
-	log.Println("captured sigint")
+	log.Println("closing...")
 	gw.Close(rootctx)
 }

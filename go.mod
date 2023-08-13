@@ -4,7 +4,6 @@ go 1.20
 
 require (
 	github.com/joho/godotenv v1.5.1
-	github.com/orcaman/concurrent-map/v2 v2.0.1
 	golang.org/x/crypto v0.12.0
 	nhooyr.io/websocket v1.8.7
 )

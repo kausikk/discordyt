@@ -14,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/orcaman/concurrent-map/v2"
 	"golang.org/x/crypto/nacl/secretbox"
 	"nhooyr.io/websocket"
 )
@@ -65,22 +64,23 @@ const packetDuration = 19800 * time.Microsecond
 // Size of buffer channel for sending commands
 const cmbBufLen = 1000
 
-type gatewayState int8
+type gwState int8
 
 const (
-	gwClosed gatewayState = iota
+	gwClosed gwState = iota
 	gwReady
 	gwResuming
 )
 
 type Gateway struct {
-	state           gatewayState
+	state           gwState
 	botToken        string
 	botAppId        string
 	botPublicKey    string
 	songFolder      string
-	userOccupancy   cmap.ConcurrentMap[string, string]
-	guildStatesLock sync.Mutex
+	userOccLock     sync.RWMutex
+	userOccupancy   map[string]string
+	guildStatesLock sync.RWMutex
 	guildStates     map[string]*guildState
 	playCmd         chan InteractionData
 	stopCmd         chan InteractionData
@@ -113,7 +113,7 @@ func Connect(rootctx context.Context, botToken, botAppId, botPublicKey, songFold
 		botAppId:      botAppId,
 		botPublicKey:  botPublicKey,
 		songFolder:    songFolder,
-		userOccupancy: cmap.New[string](),
+		userOccupancy: make(map[string]string),
 		guildStates:   make(map[string]*guildState),
 		playCmd:       make(chan InteractionData, cmbBufLen),
 		stopCmd:       make(chan InteractionData, cmbBufLen),
@@ -470,7 +470,10 @@ func (gw *Gateway) StopAudio(rootctx context.Context, guildId string) error {
 }
 
 func (gw *Gateway) GetUserChannel(guildId, userId string) (string, bool) {
-	return gw.userOccupancy.Get(guildId + userId)
+	gw.userOccLock.RLock()
+	defer gw.userOccLock.RUnlock()
+	chnl, ok := gw.userOccupancy[guildId+userId]
+	return chnl, ok
 }
 
 func (gw *Gateway) PlayCmd() <-chan InteractionData {
@@ -501,9 +504,10 @@ func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) erro
 		// Get channel, user, and guild
 		voiceData := voiceStateData{}
 		json.Unmarshal(payload.D, &voiceData)
-		gw.userOccupancy.Set(
-			voiceData.GuildId+voiceData.UserId,
-			voiceData.ChannelId)
+		gw.userOccLock.Lock()
+		gw.userOccupancy[voiceData.GuildId+voiceData.UserId] =
+			voiceData.ChannelId
+		gw.userOccLock.Unlock()
 		// Return if not related to bot
 		if voiceData.UserId != gw.botAppId {
 			return nil
@@ -575,8 +579,8 @@ func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) erro
 }
 
 func getGuildState(gw *Gateway, guildId string) (*guildState, bool) {
-	gw.guildStatesLock.Lock()
-	defer gw.guildStatesLock.Unlock()
+	gw.guildStatesLock.RLock()
+	defer gw.guildStatesLock.RUnlock()
 	guild, ok := gw.guildStates[guildId]
 	return guild, ok
 }

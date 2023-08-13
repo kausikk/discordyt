@@ -28,16 +28,16 @@ var cachedHeartbeat = voiceGwPayload{
 	D: []byte{49, 50, 51, 52, 48, 51, 50, 57, 48},
 }
 
-type voiceGatewayState int8
+type vGwState int8
 
 const (
-	vGwClosed voiceGatewayState = iota
+	vGwClosed vGwState = iota
 	vGwReady
 	vGwResuming
 )
 
 type voiceGateway struct {
-	state         voiceGatewayState
+	state         vGwState
 	botAppId      string
 	guildId       string
 	sessionId     string

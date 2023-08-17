@@ -2,10 +2,14 @@ package internal
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"log"
+	"net"
 	"time"
 
+	"golang.org/x/crypto/nacl/secretbox"
 	"nhooyr.io/websocket"
 )
 
@@ -43,14 +47,13 @@ type voiceGateway struct {
 	sessionId     string
 	token         string
 	endpoint      string
+	packets       chan []byte
 	ws            *websocket.Conn
 	heartbeatIntv int64
 	ssrc          uint32
 	ip            string
 	port          int64
 	secretKey     [32]byte
-	sequence      uint16
-	timestamp     uint32
 }
 
 func voiceConnect(rootctx context.Context, botAppId, guildId, sessionId, token, endpoint string) (*voiceGateway, error) {
@@ -64,6 +67,7 @@ func voiceConnect(rootctx context.Context, botAppId, guildId, sessionId, token, 
 		sessionId: sessionId,
 		token:     token,
 		endpoint:  endpoint,
+		packets:   make(chan []byte),
 	}
 
 	// Connect to Discord websocket
@@ -137,7 +141,7 @@ func voiceConnect(rootctx context.Context, botAppId, guildId, sessionId, token, 
 	return &voiceGw, nil
 }
 
-func (voiceGw *voiceGateway) Listen(rootctx context.Context) error {
+func (voiceGw *voiceGateway) Serve(rootctx context.Context) error {
 	var err error
 	payload := voiceGwPayload{}
 
@@ -152,6 +156,7 @@ func (voiceGw *voiceGateway) Listen(rootctx context.Context) error {
 		// Start heartbeat
 		gwCtx, gwCancel := context.WithCancel(rootctx)
 		go voiceGwHeartbeat(voiceGw, gwCtx)
+		go voiceGwUdp(voiceGw, gwCtx)
 
 		// Enter read loop
 		keepReading := true
@@ -202,11 +207,12 @@ func (voiceGw *voiceGateway) Listen(rootctx context.Context) error {
 		// Connect to resume url
 		dialCtx, dialCancel := context.WithTimeout(
 			rootctx, defaultTimeout)
-		voiceGw.ws, _, err = websocket.Dial(dialCtx, voiceGw.endpoint, nil)
+		newWs, _, err := websocket.Dial(dialCtx, voiceGw.endpoint, nil)
 		dialCancel()
 		if err != nil {
 			return err
 		}
+		voiceGw.ws = newWs
 
 		// Receive HELLO event
 		if err = vRead(voiceGw.ws, rootctx, &payload); err != nil {
@@ -235,24 +241,7 @@ func (voiceGw *voiceGateway) Listen(rootctx context.Context) error {
 	}
 }
 
-func (voiceGw *voiceGateway) Speaking(rootctx context.Context, isSpeak bool) error {
-	val := int64(1)
-	if !isSpeak {
-		val = 0
-	}
-	data, _ := json.Marshal(voiceSpeakingData{
-		Speaking: val,
-		Delay:    0,
-		Ssrc:     voiceGw.ssrc,
-	})
-	payload := voiceGwPayload{
-		Op: voiceSpeaking,
-		D:  data,
-	}
-	return vSend(voiceGw.ws, rootctx, &payload)
-}
-
-func (voiceGw *voiceGateway) Close(rootctx context.Context) error {
+func (voiceGw *voiceGateway) Close() error {
 	voiceGw.state = vGwClosed
 	voiceGw.ws.Close(websocket.StatusNormalClosure, "")
 	return nil
@@ -268,6 +257,71 @@ func voiceGwHeartbeat(voiceGw *voiceGateway, ctx context.Context) error {
 			return ctx.Err()
 		case <-time.After(
 			time.Duration(voiceGw.heartbeatIntv) * time.Millisecond):
+		}
+	}
+}
+
+func voiceGwUdp(voiceGw *voiceGateway, ctx context.Context) {
+	// Open voice udp socket
+	url := fmt.Sprintf(
+		"%s:%d", voiceGw.ip, voiceGw.port,
+	)
+	sock, err := net.Dial("udp", url)
+	if err != nil {
+		return
+	}
+	defer sock.Close()
+
+	// Send speaking payload
+	data, _ := json.Marshal(voiceSpeakingData{
+		Speaking: 1,
+		Delay:    0,
+		Ssrc:     voiceGw.ssrc,
+	})
+	payload := voiceGwPayload{
+		Op: voiceSpeaking,
+		D:  data,
+	}
+	err = vSend(voiceGw.ws, ctx, &payload)
+	if err != nil {
+		return
+	}
+
+	// xsalsa20_poly1305 stuff, see
+	// https://github.com/bwmarrin/discordgo
+	// https://discord.com/developers/docs/topics/
+	// voice-connections#encrypting-and-sending-voice
+	nonce := [nonceLen]byte{}
+	header := make([]byte, rtpHeaderLen)
+	header[0] = 0x80
+	header[1] = 0x78
+	binary.BigEndian.PutUint32(header[8:], voiceGw.ssrc)
+
+	var sequence uint16
+	var timestamp uint32
+
+	for {
+		select {
+		case packet := <-voiceGw.packets:
+			// more xsalsa20_poly1305 stuff
+			binary.BigEndian.PutUint16(header[2:], sequence)
+			binary.BigEndian.PutUint32(header[4:], timestamp)
+			sequence += 1
+			timestamp += 960
+			copy(nonce[:], header)
+			encrypted := secretbox.Seal(
+				header,
+				packet,
+				&nonce,
+				&voiceGw.secretKey,
+			)
+			_, err := sock.Write(encrypted)
+			if err != nil {
+				log.Println("udp err:", err)
+				return
+			}
+		case <-ctx.Done():
+			return
 		}
 	}
 }

@@ -2,14 +2,15 @@ package main
 
 import (
 	"context"
-	"github.com/joho/godotenv"
-	"github.com/kausikk/discordyt/internal"
 	"log"
 	"os"
 	"os/signal"
+
+	"github.com/joho/godotenv"
+	"github.com/kausikk/discordyt/internal"
 )
 
-const VERSION = "v0.1.1"
+const VERSION = "v0.2"
 
 func main() {
 	// Read env variables
@@ -45,7 +46,7 @@ func main() {
 		for {
 			select {
 			default:
-				err = gw.Listen(rootctx)
+				err = gw.Serve(rootctx)
 				log.Println("restart gateway:", err)
 				err = gw.Reconnect(rootctx)
 				if err != nil {
@@ -66,6 +67,7 @@ func main() {
 				go play(
 					gw, rootctx, data,
 					config["BOT_APP_ID"],
+					config["YT_API_KEY"],
 					config["SONG_FOLDER"],
 				)
 			case <-rootctx.Done():
@@ -89,5 +91,5 @@ func main() {
 	// Wait for sig int
 	<-sigint
 	log.Println("closing...")
-	gw.Close(rootctx)
+	gw.Close()
 }

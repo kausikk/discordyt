@@ -3,18 +3,14 @@ package internal
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
-	"net"
 	"os"
 	"sync"
 	"time"
 
-	"golang.org/x/crypto/nacl/secretbox"
 	"nhooyr.io/websocket"
 )
 
@@ -103,7 +99,6 @@ type guildState struct {
 	joinLock      chan bool
 	playLock      chan bool
 	joinedChnl    chan *string
-	voicePaks     chan []byte
 }
 
 func Connect(rootctx context.Context, botToken, botAppId, botPublicKey, songFolder string) (*Gateway, error) {
@@ -182,7 +177,7 @@ func (gw *Gateway) Reconnect(rootctx context.Context) error {
 	return nil
 }
 
-func (gw *Gateway) Listen(rootctx context.Context) error {
+func (gw *Gateway) Serve(rootctx context.Context) error {
 	var err error
 	readPayload := gatewayRead{}
 	sendPayload := gatewaySend{}
@@ -263,11 +258,12 @@ func (gw *Gateway) Listen(rootctx context.Context) error {
 		// Connect to resume url
 		dialCtx, dialCancel := context.WithTimeout(
 			rootctx, defaultTimeout)
-		gw.ws, _, err = websocket.Dial(dialCtx, gw.resumeUrl, nil)
+		newWs, _, err := websocket.Dial(dialCtx, gw.resumeUrl, nil)
 		dialCancel()
 		if err != nil {
 			return err
 		}
+		gw.ws = newWs
 
 		// Receive HELLO event
 		if err = read(gw.ws, rootctx, &readPayload); err != nil {
@@ -314,7 +310,6 @@ func (gw *Gateway) JoinChannel(rootctx context.Context, guildId string, channelI
 		guild.playLock = make(chan bool, 1)
 		guild.playLock <- true
 		guild.joinedChnl = make(chan *string)
-		guild.voicePaks = make(chan []byte)
 		gw.guildStates[guildId] = guild
 	}
 	gw.guildStatesLock.Unlock()
@@ -435,7 +430,7 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 				pStart = 0
 				pNum += 1
 				select {
-				case guild.voicePaks <- packet:
+				case guild.voiceGw.packets <- packet:
 					// Do nothing
 				case <-time.After(voicePacketTimeout):
 					return errors.New("packet send timeout")
@@ -484,14 +479,14 @@ func (gw *Gateway) StopCmd() <-chan InteractionData {
 	return gw.stopCmd
 }
 
-func (gw *Gateway) Close(rootctx context.Context) {
+func (gw *Gateway) Close() {
 	gw.state = gwClosed
 	gw.ws.Close(websocket.StatusNormalClosure, "")
 	gw.guildStatesLock.Lock()
 	defer gw.guildStatesLock.Unlock()
 	for _, guild := range gw.guildStates {
 		if guild.voiceGw != nil {
-			guild.voiceGw.Close(rootctx)
+			guild.voiceGw.Close()
 		}
 		guild.freshTokEnd = false
 		guild.freshChnlSess = false
@@ -528,7 +523,7 @@ func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) erro
 		// If chnl id is nil, make sure voice gw is closed
 		if guild.botChnlId == nil {
 			if guild.voiceGw != nil {
-				guild.voiceGw.Close(ctx)
+				guild.voiceGw.Close()
 			}
 			notifyJoin(guild, nil)
 			// Join voice gateway with new server data
@@ -588,7 +583,7 @@ func getGuildState(gw *Gateway, guildId string) (*guildState, bool) {
 func startVoiceGw(guild *guildState, botAppId string, ctx context.Context) {
 	// Close voice gw if not already closed
 	if guild.voiceGw != nil {
-		guild.voiceGw.Close(ctx)
+		guild.voiceGw.Close()
 	}
 
 	// Set to stale so that next startVoiceGw
@@ -602,8 +597,7 @@ func startVoiceGw(guild *guildState, botAppId string, ctx context.Context) {
 		defer connCancel()
 
 		// Create voice gateway
-		var err error
-		guild.voiceGw, err = voiceConnect(
+		voiceGw, err := voiceConnect(
 			connCtx,
 			botAppId,
 			guild.guildId,
@@ -617,73 +611,12 @@ func startVoiceGw(guild *guildState, botAppId string, ctx context.Context) {
 			notifyJoin(guild, nil)
 			return
 		}
+		guild.voiceGw = voiceGw
 		notifyJoin(guild, guild.botChnlId)
 
-		deadVoiceGw := make(chan bool)
-		// Start thread for sending packets
-		go startVoiceUdp(guild.voiceGw, ctx, guild.voicePaks, deadVoiceGw)
 		// Start listening
-		guild.voiceGw.Listen(ctx)
-		// After voice gw closes, notify udp handler
-		deadVoiceGw <- true
+		guild.voiceGw.Serve(ctx)
 	}()
-}
-
-func startVoiceUdp(voiceGw *voiceGateway, ctx context.Context, voicePaks <-chan []byte, deadVoiceGW <-chan bool) {
-	defer log.Println("udp closed")
-
-	// Open voice udp socket
-	url := fmt.Sprintf(
-		"%s:%d",
-		voiceGw.ip, voiceGw.port,
-	)
-	sock, err := net.Dial("udp", url)
-	if err != nil {
-		return
-	}
-	defer sock.Close()
-
-	err = voiceGw.Speaking(ctx, true)
-	if err != nil {
-		return
-	}
-
-	// xsalsa20_poly1305 stuff, see
-	// https://github.com/bwmarrin/discordgo
-	// https://discord.com/developers/docs/topics/
-	// voice-connections#encrypting-and-sending-voice
-	nonce := [nonceLen]byte{}
-	header := make([]byte, rtpHeaderLen)
-	header[0] = 0x80
-	header[1] = 0x78
-	binary.BigEndian.PutUint32(header[8:], voiceGw.ssrc)
-
-	for {
-		select {
-		case packet := <-voicePaks:
-			// more xsalsa20_poly1305 stuff
-			binary.BigEndian.PutUint16(header[2:], voiceGw.sequence)
-			binary.BigEndian.PutUint32(header[4:], voiceGw.timestamp)
-			voiceGw.sequence += 1
-			voiceGw.timestamp += 960
-			copy(nonce[:], header)
-			encrypted := secretbox.Seal(
-				header,
-				packet,
-				&nonce,
-				&voiceGw.secretKey,
-			)
-			_, err := sock.Write(encrypted)
-			if err != nil {
-				log.Println("udp err:", err)
-				return
-			}
-		case <-deadVoiceGW:
-			return
-		case <-ctx.Done():
-			return
-		}
-	}
 }
 
 func notifyJoin(guild *guildState, channelId *string) {

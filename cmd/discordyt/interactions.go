@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -15,6 +18,7 @@ import (
 )
 
 const discordApi = "https://discord.com/api"
+const ytubeSearch = "https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=3&type=video&safeSearch=none"
 
 type interactionRespType int64
 
@@ -30,7 +34,29 @@ const (
 	modal
 )
 
-func play(gw *internal.Gateway, rootctx context.Context, data internal.InteractionData, botAppId, songFolder string) {
+type ytSearchList struct {
+	Items []ytSearch `json:"items"`
+}
+type ytSearch struct {
+	Id      ytSearchId      `json:"id"`
+	Snippet ytSearchSnippet `json:"snippet"`
+}
+type ytSearchId struct {
+	VideoId string `json:"videoId"`
+}
+type ytSearchSnippet struct {
+	Title string `json:"title"`
+}
+
+type interactionPost struct {
+	Type interactionRespType `json:"type"`
+	Data interactionContent  `json:"data"`
+}
+type interactionContent struct {
+	Content string `json:"content"`
+}
+
+func play(gw *internal.Gateway, rootctx context.Context, data internal.InteractionData, botAppId, ytApiKey, songFolder string) {
 	// Check if user is in a channel
 	chnl, ok := gw.GetUserChannel(data.GuildId, data.Member.User.Id)
 	if !ok || chnl == "" {
@@ -42,12 +68,54 @@ func play(gw *internal.Gateway, rootctx context.Context, data internal.Interacti
 		return
 	}
 
-	songId := data.Data.Options[0].Value
-	songPath := songFolder + "/" + songId + ".opus"
+	// Respond to interaction (must be done quickly)
 	postResp(
 		data.Id, data.Token, "Finding song...",
 		deferredChannelMessageWithSource,
 	)
+
+	// Search youtube for most relevant video
+	query := data.Data.Options[0].Value
+	results, err := func() (*ytSearchList, error) {
+		req, err := http.NewRequest("GET", ytubeSearch, nil)
+		if err != nil {
+			return nil, err
+		}
+		params := req.URL.Query()
+		params.Set("q", query)
+		params.Set("key", ytApiKey)
+		req.URL.RawQuery = params.Encode()
+
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+		results := ytSearchList{}
+		err = json.Unmarshal(body, &results)
+		if err != nil {
+			return nil, err
+		}
+		return &results, nil
+	}()
+	if err != nil {
+		log.Println("ytapi err:", err)
+		patchResp(
+			botAppId, data.Token,
+			"Failed to find '"+query+"'",
+		)
+		return
+	}
+
+	// Extract id from top result
+	songId := results.Items[0].Id.VideoId
+	songPath := songFolder + "/" + songId + ".opus"
 
 	// Check if file already exists
 	// Otherwise download it
@@ -101,7 +169,7 @@ func play(gw *internal.Gateway, rootctx context.Context, data internal.Interacti
 	if *joinChnl == "" {
 		joinChnl = nil
 	}
-	err := gw.JoinChannel(rootctx, data.GuildId, joinChnl)
+	err = gw.JoinChannel(rootctx, data.GuildId, joinChnl)
 
 	if err != nil {
 		log.Println("play err:", err)
@@ -115,9 +183,10 @@ func play(gw *internal.Gateway, rootctx context.Context, data internal.Interacti
 		return
 	}
 
+	title := html.UnescapeString(results.Items[0].Snippet.Title)
 	patchResp(
 		botAppId, data.Token,
-		"Playing "+songId,
+		"Playing "+title,
 	)
 
 	err = gw.PlayAudio(
@@ -142,16 +211,17 @@ func stop(gw *internal.Gateway, rootctx context.Context, data internal.Interacti
 }
 
 func postResp(id, token, msg string, intType interactionRespType) error {
+	data, _ := json.Marshal(interactionPost{
+		intType, interactionContent{msg},
+	})
+	body := bytes.NewReader(data)
 	resp, err := http.Post(
 		fmt.Sprintf(
 			"%s/interactions/%s/%s/callback",
 			discordApi, id, token,
 		),
 		"application/json",
-		bytes.NewBufferString(fmt.Sprintf(
-			`{"type":%d,"data":{"content":"%s"}}`,
-			intType, msg,
-		)),
+		body,
 	)
 	if err != nil {
 		return err
@@ -161,15 +231,15 @@ func postResp(id, token, msg string, intType interactionRespType) error {
 }
 
 func patchResp(id, token, msg string) error {
+	data, _ := json.Marshal(interactionContent{msg})
+	body := bytes.NewReader(data)
 	req, err := http.NewRequest(
 		"PATCH",
 		fmt.Sprintf(
 			"%s/webhooks/%s/%s/messages/@original",
 			discordApi, id, token,
 		),
-		bytes.NewBufferString(fmt.Sprintf(
-			`{"content":"%s"}`, msg,
-		)),
+		body,
 	)
 	if err != nil {
 		return err

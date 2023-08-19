@@ -99,6 +99,7 @@ type guildState struct {
 	joinLock      chan bool
 	playLock      chan bool
 	joinedChnl    chan *string
+	isPlaying     bool
 }
 
 func Connect(rootctx context.Context, botToken, botAppId, botPublicKey, songFolder string) (*Gateway, error) {
@@ -195,11 +196,11 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 		go gwHeartbeat(gw, hbCtx)
 
 		// Enter read loop
-		keepReading := true
-		for keepReading {
+		isReading := true
+		for isReading {
 			if err = read(gw.ws, rootctx, &readPayload); err != nil {
 				log.Println("gw read err:", err)
-				keepReading = false
+				isReading = false
 				break
 			}
 
@@ -214,7 +215,7 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 				sendPayload.D, _ = json.Marshal(gw.lastSeq)
 				err = send(gw.ws, rootctx, &sendPayload)
 				if err != nil {
-					keepReading = false
+					isReading = false
 				}
 			case reconnect:
 				// Close with ServiceRestart to trigger resume
@@ -228,7 +229,7 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 				// Handle dispatch
 				err = handleDispatch(gw, rootctx, &readPayload)
 				if err != nil {
-					keepReading = false
+					isReading = false
 				}
 			}
 		}
@@ -357,13 +358,6 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 		return errors.New("bot not in guild")
 	}
 
-	// Check if voice is connected
-	if guild.voiceGw == nil {
-		return errors.New("voice gateway not connected")
-	} else if guild.voiceGw.state != vGwReady {
-		return errors.New("voice gateway not connected")
-	}
-
 	// Lock guild to prevent PlayAudio()
 	// from executing in another thread
 	select {
@@ -372,7 +366,18 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 	case <-rootctx.Done():
 		return errors.New("could not lock")
 	}
-	defer func() { guild.playLock <- true }()
+	defer func() {
+		guild.isPlaying = false
+		guild.playLock <- true
+	}()
+	guild.isPlaying = true
+
+	// Check if voice is connected
+	if guild.voiceGw == nil {
+		return errors.New("voice gateway not connected")
+	} else if guild.voiceGw.state != vGwReady {
+		return errors.New("voice gateway not connected")
+	}
 
 	// Open song
 	f, err := os.Open(song)
@@ -389,7 +394,7 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 	pNum := 0
 	pStart := 0
 	discard := 0
-	for {
+	for guild.isPlaying {
 		n, err := io.ReadFull(f, headerBuf[:])
 		if err == io.EOF || n < pageHeaderLen {
 			break
@@ -431,7 +436,7 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 				pNum += 1
 				select {
 				case guild.voiceGw.packets <- packet:
-					// Do nothing
+					// Successfully sent packet to voice gw
 				case <-time.After(voicePacketTimeout):
 					return errors.New("packet send timeout")
 				case <-rootctx.Done():
@@ -442,6 +447,10 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 					pNum = 0
 				}
 			}
+			// Break if StopAudio sets isPlaying to false
+			if !guild.isPlaying {
+				break
+			}
 		}
 	}
 
@@ -450,18 +459,15 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 
 func (gw *Gateway) StopAudio(rootctx context.Context, guildId string) error {
 	// Get guild state
-	_, ok := getGuildState(gw, guildId)
+	guild, ok := getGuildState(gw, guildId)
 	if !ok {
 		return errors.New("bot not in guild")
 	}
 
-	// Send a voice state update to leave channel
-	payload := gatewaySend{Op: voiceStateUpdate}
-	data := voiceStateUpdateData{
-		guildId, nil, false, false,
-	}
-	payload.D, _ = json.Marshal(&data)
-	return send(gw.ws, rootctx, &payload)
+	// Stop PlayAudio loop
+	guild.isPlaying = false
+
+	return nil
 }
 
 func (gw *Gateway) GetUserChannel(guildId, userId string) (string, bool) {
@@ -481,7 +487,6 @@ func (gw *Gateway) StopCmd() <-chan InteractionData {
 
 func (gw *Gateway) Close() {
 	gw.state = gwClosed
-	gw.ws.Close(websocket.StatusNormalClosure, "")
 	gw.guildStatesLock.Lock()
 	defer gw.guildStatesLock.Unlock()
 	for _, guild := range gw.guildStates {
@@ -491,6 +496,7 @@ func (gw *Gateway) Close() {
 		guild.freshTokEnd = false
 		guild.freshChnlSess = false
 	}
+	gw.ws.Close(websocket.StatusNormalClosure, "")
 }
 
 func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) error {

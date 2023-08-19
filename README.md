@@ -3,15 +3,17 @@ WIP, will add install steps later
 
 ## Notes
 TODO:
+- add command syncing
 - unhandlded json encode/decodes
 - rename *_consts.go files
-- add state handling to the start of connect, listen, reconnect, playaudio, join channel
+- add state handling to the start of Gateway methods
 - Use UDP socket thread to monitor silence and leave channel
 - send silences frames after song ends
 - unhandled interaction resp errors
 - play queue!!!
 - proper error definitions (replace error.New)
 - gateway properties should be from environment
+- add runtime to "Playing song" response
 
 Done:
 - better way to build string buffer for response -> done

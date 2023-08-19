@@ -10,7 +10,7 @@ import (
 	"github.com/kausikk/discordyt/internal"
 )
 
-const VERSION = "v0.2"
+const VERSION = "v0.2.1"
 
 func main() {
 	// Read env variables
@@ -28,10 +28,10 @@ func main() {
 	signal.Notify(sigint, os.Interrupt)
 
 	// Start gateway
-	rootctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	gw, err := internal.Connect(
-		rootctx,
+		ctx,
 		config["BOT_TOKEN"],
 		config["BOT_APP_ID"],
 		config["BOT_PUBLIC_KEY"],
@@ -46,14 +46,14 @@ func main() {
 		for {
 			select {
 			default:
-				err = gw.Serve(rootctx)
+				err = gw.Serve(ctx)
 				log.Println("restart gateway:", err)
-				err = gw.Reconnect(rootctx)
+				err = gw.Reconnect(ctx)
 				if err != nil {
 					log.Println("gateway connect failed:", err)
 					return
 				}
-			case <-rootctx.Done():
+			case <-ctx.Done():
 				return
 			}
 		}
@@ -65,12 +65,12 @@ func main() {
 			select {
 			case data := <-gw.PlayCmd():
 				go play(
-					gw, rootctx, data,
+					gw, ctx, data,
 					config["BOT_APP_ID"],
 					config["YT_API_KEY"],
 					config["SONG_FOLDER"],
 				)
-			case <-rootctx.Done():
+			case <-ctx.Done():
 				return
 			}
 		}
@@ -81,8 +81,8 @@ func main() {
 		for {
 			select {
 			case data := <-gw.StopCmd():
-				go stop(gw, rootctx, data)
-			case <-rootctx.Done():
+				go stop(gw, ctx, data)
+			case <-ctx.Done():
 				return
 			}
 		}

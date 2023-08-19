@@ -18,7 +18,9 @@ import (
 )
 
 const discordApi = "https://discord.com/api"
-const ytubeSearch = "https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=3&type=video&safeSearch=none"
+const youtubeApi = "https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=3&type=video&safeSearch=none"
+
+const ytdlpFormat = "ba[acodec=opus][asr=48K][ext=webm][audio_channels=2]"
 
 type interactionRespType int64
 
@@ -56,7 +58,7 @@ type interactionContent struct {
 	Content string `json:"content"`
 }
 
-func play(gw *internal.Gateway, rootctx context.Context, data internal.InteractionData, botAppId, ytApiKey, songFolder string) {
+func play(gw *internal.Gateway, ctx context.Context, data internal.InteractionData, botAppId, ytApiKey, songFolder string) {
 	// Check if user is in a channel
 	chnl, ok := gw.GetUserChannel(data.GuildId, data.Member.User.Id)
 	if !ok || chnl == "" {
@@ -77,12 +79,12 @@ func play(gw *internal.Gateway, rootctx context.Context, data internal.Interacti
 	// Search youtube for most relevant video
 	query := data.Data.Options[0].Value
 	results, err := func() (*ytSearchList, error) {
-		req, err := http.NewRequest("GET", ytubeSearch, nil)
+		req, err := http.NewRequest("GET", youtubeApi, nil)
 		if err != nil {
 			return nil, err
 		}
 		params := req.URL.Query()
-		params.Set("q", query)
+		params.Set("q", html.EscapeString(query))
 		params.Set("key", ytApiKey)
 		req.URL.RawQuery = params.Encode()
 
@@ -113,7 +115,9 @@ func play(gw *internal.Gateway, rootctx context.Context, data internal.Interacti
 		return
 	}
 
-	// Extract id from top result
+	// Extract song data from top result
+	title := html.UnescapeString(
+		results.Items[0].Snippet.Title)
 	songId := results.Items[0].Id.VideoId
 	songPath := songFolder + "/" + songId + ".opus"
 
@@ -123,38 +127,66 @@ func play(gw *internal.Gateway, rootctx context.Context, data internal.Interacti
 		log.Println("downloading", songId)
 
 		// Download from youtube with yt-dlp
-		err := ytdlpCmd(songFolder, songId)
-		if err != nil {
-			log.Println("yt-dlp err:", err)
-			msg := "No suitable format available for " + songId
-			if err.Error() != "format unavailable" {
-				msg = "Failed to download " + songId
+		cmd := exec.Command(
+			"conda",
+			"run",
+			"-n", "yt-bot-env",
+			"yt-dlp",
+			"-f", ytdlpFormat,
+			"-o", songFolder+"/%(id)s.%(ext)s",
+			songId,
+		)
+		stdErr := strings.Builder{}
+		cmd.Stderr = &stdErr
+		err = cmd.Run()
+		ytdlpErr := stdErr.String()
+		if err != nil || strings.Contains(ytdlpErr, "ERROR") {
+			log.Println("yt-dlp err:", ytdlpErr)
+			partMsg := "Failed to download "
+			if strings.Contains(
+				ytdlpErr,
+				"format is not available",
+			) {
+				partMsg = "No suitable format available for "
 			}
-			patchResp(
-				botAppId, data.Token, msg,
-			)
+			patchResp(botAppId, data.Token, partMsg + title)
 			return
 		}
 
 		// Convert to opus file
-		err = ffmpegCmd(songFolder + "/" + songId)
+		webmPath := songFolder+"/"+songId+".webm"
+		cmd = exec.Command(
+			"ffmpeg",
+			"-i", webmPath,
+			"-map_metadata", "-1",
+			"-vn",
+			"-c:a", "copy",
+			"-f", "opus",
+			"-ar", "48000",
+			"-ac", "2",
+			songPath,
+		)
+		stdErr.Reset()
+		cmd.Stderr = &stdErr
+		err = cmd.Run()
 		if err != nil {
-			log.Println("ffmpeg err:", err)
+			log.Println("ffmpeg err:", stdErr.String())
 			patchResp(
 				botAppId, data.Token,
-				"Failed to convert "+songId,
+				"Failed to convert "+title,
 			)
 			return
 		}
 
 		// Delete .webm file
-		os.Remove(songFolder + "/" + songId + ".webm")
+		os.Remove(webmPath)
 
 		// Check that file exists
 		if !checkExists(songPath) {
+			log.Println("file doesn't exist:", songId)
 			patchResp(
 				botAppId, data.Token,
-				"Failed to download "+songId,
+				"Failed to download "+title,
 			)
 			return
 		}
@@ -165,35 +197,19 @@ func play(gw *internal.Gateway, rootctx context.Context, data internal.Interacti
 	}
 
 	// Try to join channel
-	joinChnl := &chnl
-	if *joinChnl == "" {
-		joinChnl = nil
-	}
-	err = gw.JoinChannel(rootctx, data.GuildId, joinChnl)
-
+	err = gw.JoinChannel(ctx, data.GuildId, &chnl)
 	if err != nil {
-		log.Println("play err:", err)
-		var msg string
-		if err.Error() == "could not lock" {
-			msg = "Another song is playing"
-		} else {
-			msg = "Could not join channel"
-		}
-		patchResp(botAppId, data.Token, msg)
+		log.Println("join err:", err)
+		patchResp(
+			botAppId, data.Token,
+			"Could not join channel",
+		)
 		return
 	}
 
-	title := html.UnescapeString(results.Items[0].Snippet.Title)
-	patchResp(
-		botAppId, data.Token,
-		"Playing "+title,
-	)
-
-	err = gw.PlayAudio(
-		rootctx,
-		data.GuildId,
-		songPath,
-	)
+	// Start playing
+	patchResp(botAppId, data.Token, "Playing "+title,)
+	err = gw.PlayAudio(ctx, data.GuildId, songPath)
 	if err != nil {
 		log.Println("play error:", songId, err)
 		return
@@ -201,9 +217,10 @@ func play(gw *internal.Gateway, rootctx context.Context, data internal.Interacti
 	log.Println("done playing", songId)
 }
 
-func stop(gw *internal.Gateway, rootctx context.Context, data internal.InteractionData) {
+func stop(gw *internal.Gateway, ctx context.Context, data internal.InteractionData) {
 	log.Println("stopping", data.GuildId)
-	gw.StopAudio(rootctx, data.GuildId)
+	gw.StopAudio(ctx, data.GuildId)
+	gw.JoinChannel(ctx, data.GuildId, nil)
 	postResp(
 		data.Id, data.Token, "Stopped",
 		channelMessageWithSource,
@@ -251,33 +268,6 @@ func patchResp(id, token, msg string) error {
 		return err
 	}
 	resp.Body.Close()
-	return nil
-}
-
-func ytdlpCmd(songFolder, id string) error {
-	outFmt := fmt.Sprintf("%s/%%(id)s.%%(ext)s", songFolder)
-	cmd := exec.Command("conda", "run", "-n", "yt-bot-env", "yt-dlp", "-f", "ba[acodec=opus][asr=48K][ext=webm][audio_channels=2]", "-o", outFmt, id)
-	var errOut strings.Builder
-	cmd.Stderr = &errOut
-	err := cmd.Run()
-	strErr := errOut.String()
-	if strings.Contains(strErr, "Requested format is not available") {
-		return errors.New("format unavailable")
-	} else if err != nil || strings.Contains(strErr, "ERROR") {
-		return errors.New(strErr)
-	}
-	return nil
-}
-
-func ffmpegCmd(songPathNoExt string) error {
-	cmd := exec.Command("ffmpeg", "-i", songPathNoExt+".webm", "-map_metadata", "-1", "-vn", "-c:a", "copy", "-f", "opus", "-ar", "48000", "-ac", "2", songPathNoExt+".opus")
-	var errOut strings.Builder
-	cmd.Stderr = &errOut
-	err := cmd.Run()
-	strErr := errOut.String()
-	if err != nil {
-		return errors.New(strErr)
-	}
 	return nil
 }
 

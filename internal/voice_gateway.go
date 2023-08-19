@@ -159,11 +159,11 @@ func (voiceGw *voiceGateway) Serve(rootctx context.Context) error {
 		go voiceGwUdp(voiceGw, gwCtx)
 
 		// Enter read loop
-		keepReading := true
-		for keepReading {
+		isReading := true
+		for isReading {
 			if err = vRead(voiceGw.ws, gwCtx, &payload); err != nil {
 				log.Println("voice gw read err:", err)
-				keepReading = false
+				isReading = false
 				break
 			}
 
@@ -173,7 +173,7 @@ func (voiceGw *voiceGateway) Serve(rootctx context.Context) error {
 				// Send heartbeat
 				err = vSend(voiceGw.ws, gwCtx, &cachedHeartbeat)
 				if err != nil {
-					keepReading = false
+					isReading = false
 				}
 			case voiceResumed:
 				// Do nothing

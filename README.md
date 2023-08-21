@@ -3,19 +3,20 @@ WIP, will add install steps later
 
 ## Notes
 TODO:
-- add command syncing
+- do binary search in find()
+- change guild state to store channel id as string instead of *string
 - unhandlded json encode/decodes
 - rename *_consts.go files
 - add state handling to the start of Gateway methods
 - Use UDP socket thread to monitor silence and leave channel
 - send silences frames after song ends
 - unhandled interaction resp errors
-- play queue!!!
 - proper error definitions (replace error.New)
 - gateway properties should be from environment
 - add runtime to "Playing song" response
 
 Done:
+- play queue!!! -> done, but not thoroughly tested
 - better way to build string buffer for response -> done
 - songId is input directly into full path, should be checked -> basically done, as long as we trust youtube api output
 - change consts and struct naming -> done

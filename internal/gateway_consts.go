@@ -145,6 +145,7 @@ type InteractionData struct {
 	Id      string             `json:"id"`
 	GuildId string             `json:"guild_id"`
 	Data    InteractionSubData `json:"data"`
+	ChnlId  string             `json:"-"`
 }
 type InteractionMember struct {
 	User InteractionUser `json:"user"`

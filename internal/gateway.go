@@ -58,7 +58,7 @@ const packetBurst = 10
 const packetDuration = 19800 * time.Microsecond
 
 // Size of buffer channel for sending commands
-const cmbBufLen = 1000
+const cmbBufLen = 10
 
 type gwState int8
 
@@ -78,8 +78,7 @@ type Gateway struct {
 	userOccupancy   map[string]string
 	guildStatesLock sync.RWMutex
 	guildStates     map[string]*guildState
-	playCmd         chan InteractionData
-	stopCmd         chan InteractionData
+	cmd             chan InteractionData
 	ws              *websocket.Conn
 	lastSeq         int64
 	resumeUrl       string
@@ -111,8 +110,7 @@ func Connect(rootctx context.Context, botToken, botAppId, botPublicKey, songFold
 		songFolder:    songFolder,
 		userOccupancy: make(map[string]string),
 		guildStates:   make(map[string]*guildState),
-		playCmd:       make(chan InteractionData, cmbBufLen),
-		stopCmd:       make(chan InteractionData, cmbBufLen),
+		cmd:           make(chan InteractionData, cmbBufLen),
 	}
 	err := gw.Reconnect(rootctx)
 	return &gw, err
@@ -470,19 +468,8 @@ func (gw *Gateway) StopAudio(rootctx context.Context, guildId string) error {
 	return nil
 }
 
-func (gw *Gateway) GetUserChannel(guildId, userId string) (string, bool) {
-	gw.userOccLock.RLock()
-	defer gw.userOccLock.RUnlock()
-	chnl, ok := gw.userOccupancy[guildId+userId]
-	return chnl, ok
-}
-
-func (gw *Gateway) PlayCmd() <-chan InteractionData {
-	return gw.playCmd
-}
-
-func (gw *Gateway) StopCmd() <-chan InteractionData {
-	return gw.stopCmd
+func (gw *Gateway) Cmd() <-chan InteractionData {
+	return gw.cmd
 }
 
 func (gw *Gateway) Close() {
@@ -555,18 +542,13 @@ func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) erro
 			startVoiceGw(guild, gw.botAppId, ctx)
 		}
 	case "INTERACTION_CREATE":
-		interactionData := InteractionData{}
-		json.Unmarshal(payload.D, &interactionData)
-		switch interactionData.Data.Name {
-		case "play":
-			gw.playCmd <- interactionData
-		case "stop":
-			gw.stopCmd <- interactionData
-		default:
-			log.Println(
-				"unhandled interaction:",
-				interactionData.Data.Name)
-		}
+		interData := InteractionData{}
+		json.Unmarshal(payload.D, &interData)
+		key := interData.GuildId + interData.Member.User.Id
+		gw.userOccLock.RLock()
+		interData.ChnlId = gw.userOccupancy[key]
+		gw.userOccLock.RUnlock()
+		gw.cmd <- interData
 	case "VOICE_CHANNEL_EFFECT_SEND":
 		// Do nothing
 	case "RESUMED":

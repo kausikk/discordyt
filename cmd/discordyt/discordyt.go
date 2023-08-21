@@ -59,29 +59,36 @@ func main() {
 		}
 	}()
 
-	// Start play loop
+	// Start command loop
+	type cmdChnls struct {
+		play chan internal.InteractionData
+		stop chan internal.InteractionData
+	}
+	guildChnls := make(map[string]cmdChnls)
 	go func() {
 		for {
 			select {
-			case data := <-gw.PlayCmd():
-				go play(
-					gw, ctx, data,
-					config["BOT_APP_ID"],
-					config["YT_API_KEY"],
-					config["SONG_FOLDER"],
-				)
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	// Start stop loop {
-	go func() {
-		for {
-			select {
-			case data := <-gw.StopCmd():
-				go stop(gw, ctx, data)
+			case data := <-gw.Cmd():
+				chnls, ok := guildChnls[data.GuildId]
+				if !ok {
+					chnls = cmdChnls{
+						make(chan internal.InteractionData),
+						make(chan internal.InteractionData),
+					}
+					guildChnls[data.GuildId] = chnls
+					go guildHandler(
+						gw, ctx, chnls.play, chnls.stop, data.GuildId,
+						config["BOT_APP_ID"],
+						config["YT_API_KEY"],
+						config["SONG_FOLDER"],
+					)
+				}
+				switch data.Data.Name {
+				case "play":
+					chnls.play <- data
+				case "stop":
+					chnls.stop <- data
+				}
 			case <-ctx.Done():
 				return
 			}

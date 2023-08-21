@@ -47,7 +47,7 @@ type voiceGateway struct {
 	sessionId     string
 	token         string
 	endpoint      string
-	packets       chan []byte
+	packets       <-chan []byte
 	ws            *websocket.Conn
 	heartbeatIntv int64
 	ssrc          uint32
@@ -56,7 +56,7 @@ type voiceGateway struct {
 	secretKey     [32]byte
 }
 
-func voiceConnect(rootctx context.Context, botAppId, guildId, sessionId, token, endpoint string) (*voiceGateway, error) {
+func voiceConnect(rootctx context.Context, packets <-chan []byte, botAppId, guildId, sessionId, token, endpoint string) (*voiceGateway, error) {
 	var err error
 	payload := voiceGwPayload{}
 
@@ -67,7 +67,7 @@ func voiceConnect(rootctx context.Context, botAppId, guildId, sessionId, token, 
 		sessionId: sessionId,
 		token:     token,
 		endpoint:  endpoint,
-		packets:   make(chan []byte),
+		packets:   packets,
 	}
 
 	// Connect to Discord websocket

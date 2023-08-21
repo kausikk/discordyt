@@ -4,7 +4,6 @@ WIP, will add install steps later
 ## Notes
 TODO:
 - do binary search in find()
-- change guild state to store channel id as string instead of *string
 - unhandlded json encode/decodes
 - rename *_consts.go files
 - add state handling to the start of Gateway methods
@@ -16,6 +15,7 @@ TODO:
 - add runtime to "Playing song" response
 
 Done:
+- change guild state to store channel id as string instead of *string -> done
 - play queue!!! -> done, but not thoroughly tested
 - better way to build string buffer for response -> done
 - songId is input directly into full path, should be checked -> basically done, as long as we trust youtube api output

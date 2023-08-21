@@ -20,6 +20,8 @@ const connectVoiceTimeout = 10 * time.Second
 const joinChannelTimeout = 10 * time.Second
 const voicePacketTimeout = 5 * time.Second
 
+const NullChannelId = ""
+
 // Connect voice permission (1 << 20) ||
 // Speak voice permission (1 << 21) ||
 // GUILD_VOICE_STATES intent (1 << 7) = 3145856
@@ -88,16 +90,17 @@ type Gateway struct {
 
 type guildState struct {
 	guildId       string
-	botChnlId     *string
+	botChnlId     string
 	voiceSessId   string
 	voiceToken    string
 	voiceEndpoint string
 	freshTokEnd   bool
 	freshChnlSess bool
 	voiceGw       *voiceGateway
+	packets       chan []byte
 	joinLock      chan bool
 	playLock      chan bool
-	joinedChnl    chan *string
+	joinedChnl    chan string
 	isPlaying     bool
 }
 
@@ -291,11 +294,11 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 	}
 }
 
-func (gw *Gateway) JoinChannel(rootctx context.Context, guildId string, channelId *string) error {
+func (gw *Gateway) JoinChannel(rootctx context.Context, guildId string, channelId string) error {
 	// Check if bot is already in channel
 	gw.guildStatesLock.Lock()
 	guild, ok := gw.guildStates[guildId]
-	if ok && isIdEqual(guild.botChnlId, channelId) {
+	if ok && guild.botChnlId == channelId {
 		gw.guildStatesLock.Unlock()
 		return nil
 	}
@@ -304,11 +307,12 @@ func (gw *Gateway) JoinChannel(rootctx context.Context, guildId string, channelI
 	if !ok {
 		guild = &guildState{}
 		guild.guildId = guildId
+		guild.packets = make(chan []byte)
 		guild.joinLock = make(chan bool, 1)
 		guild.joinLock <- true
 		guild.playLock = make(chan bool, 1)
 		guild.playLock <- true
-		guild.joinedChnl = make(chan *string)
+		guild.joinedChnl = make(chan string)
 		gw.guildStates[guildId] = guild
 	}
 	gw.guildStatesLock.Unlock()
@@ -326,7 +330,10 @@ func (gw *Gateway) JoinChannel(rootctx context.Context, guildId string, channelI
 	// Send a voice state update
 	payload := gatewaySend{Op: voiceStateUpdate}
 	data := voiceStateUpdateData{
-		guildId, channelId, false, false,
+		guildId, nil, false, true,
+	}
+	if channelId != NullChannelId {
+		data.ChannelId = &channelId
 	}
 	payload.D, _ = json.Marshal(&data)
 	err := send(gw.ws, rootctx, &payload)
@@ -337,7 +344,7 @@ func (gw *Gateway) JoinChannel(rootctx context.Context, guildId string, channelI
 	// Wait for channel join or context cancel/timeout
 	select {
 	case joinedId := <-guild.joinedChnl:
-		if !isIdEqual(joinedId, channelId) {
+		if joinedId != channelId {
 			return errors.New("unable to join channel")
 		}
 	case <-time.After(joinChannelTimeout):
@@ -433,7 +440,7 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 				pStart = 0
 				pNum += 1
 				select {
-				case guild.voiceGw.packets <- packet:
+				case guild.packets <- packet:
 					// Successfully sent packet to voice gw
 				case <-time.After(voicePacketTimeout):
 					return errors.New("packet send timeout")
@@ -451,7 +458,6 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 			}
 		}
 	}
-
 	return nil
 }
 
@@ -507,18 +513,15 @@ func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) erro
 			return nil
 		}
 		// Store data in guild state
-		guild.botChnlId = &voiceData.ChannelId
-		if voiceData.ChannelId == "" {
-			guild.botChnlId = nil
-		}
+		guild.botChnlId = voiceData.ChannelId
 		guild.voiceSessId = voiceData.SessionId
 		guild.freshChnlSess = true
-		// If chnl id is nil, make sure voice gw is closed
-		if guild.botChnlId == nil {
+		// If chnl id is "", make sure voice gw is closed
+		if guild.botChnlId == NullChannelId {
 			if guild.voiceGw != nil {
 				guild.voiceGw.Close()
 			}
-			notifyJoin(guild, nil)
+			notifyJoin(guild, NullChannelId)
 			// Join voice gateway with new server data
 		} else if guild.freshTokEnd {
 			startVoiceGw(guild, gw.botAppId, ctx)
@@ -538,7 +541,7 @@ func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) erro
 		guild.voiceToken = serverData.Token
 		guild.freshTokEnd = true
 		// Join voice gateway with new session and non-null channel
-		if guild.freshChnlSess && guild.botChnlId != nil {
+		if guild.freshChnlSess && guild.botChnlId != NullChannelId {
 			startVoiceGw(guild, gw.botAppId, ctx)
 		}
 	case "INTERACTION_CREATE":
@@ -587,6 +590,7 @@ func startVoiceGw(guild *guildState, botAppId string, ctx context.Context) {
 		// Create voice gateway
 		voiceGw, err := voiceConnect(
 			connCtx,
+			guild.packets,
 			botAppId,
 			guild.guildId,
 			guild.voiceSessId,
@@ -596,7 +600,7 @@ func startVoiceGw(guild *guildState, botAppId string, ctx context.Context) {
 
 		// Send signal to JoinChannel
 		if err != nil {
-			notifyJoin(guild, nil)
+			notifyJoin(guild, NullChannelId)
 			return
 		}
 		guild.voiceGw = voiceGw
@@ -607,7 +611,7 @@ func startVoiceGw(guild *guildState, botAppId string, ctx context.Context) {
 	}()
 }
 
-func notifyJoin(guild *guildState, channelId *string) {
+func notifyJoin(guild *guildState, channelId string) {
 	// Do a non-blocking write to the Guild notification
 	// channel for any listening JoinChannel coroutines
 	select {
@@ -616,16 +620,6 @@ func notifyJoin(guild *guildState, channelId *string) {
 	default:
 		// Do nothing
 	}
-}
-
-func isIdEqual(id1 *string, id2 *string) bool {
-	if id1 == id2 {
-		return true
-	}
-	if id1 != nil && id2 != nil {
-		return *id1 == *id2
-	}
-	return false
 }
 
 func gwHeartbeat(gw *Gateway, ctx context.Context) error {

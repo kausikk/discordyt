@@ -134,7 +134,7 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 					channelMessageWithSource,
 				)
 				gw.StopAudio(ctx, guildId)
-				gw.JoinChannel(ctx, guildId, nil)
+				gw.JoinChannel(ctx, guildId, internal.NullChannelId)
 				// Respond to interaction for songs
 				// that have not yet been found
 				for head := q.head(); head != nil; head = q.head() {
@@ -172,7 +172,7 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 					break
 				}
 				// Try to join channel
-				err := gw.JoinChannel(ctx, guildId, &head.chnlId)
+				err := gw.JoinChannel(ctx, guildId, head.chnlId)
 				if err != nil {
 					patchResp(
 						botAppId, head.token,
@@ -222,7 +222,7 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 					break
 				}
 				// Try to join channel
-				err := gw.JoinChannel(ctx, guildId, &head.chnlId)
+				err := gw.JoinChannel(ctx, guildId, head.chnlId)
 				if err != nil {
 					q.pop()
 					continue

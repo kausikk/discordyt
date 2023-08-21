@@ -189,7 +189,10 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 					"Playing "+head.title,
 				)
 				go func() {
-					gw.PlayAudio(ctx, guildId, head.path)
+					err := gw.PlayAudio(ctx, guildId, head.path)
+					if err != nil {
+						log.Println("play err:", err)
+					}
 					donePlay <- head.id
 				}()
 			} else {
@@ -229,7 +232,10 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 				}
 				// Play next song
 				go func() {
-					gw.PlayAudio(ctx, guildId, head.path)
+					err := gw.PlayAudio(ctx, guildId, head.path)
+					if err != nil {
+						log.Println("play err:", err)
+					}
 					donePlay <- head.id
 				}()
 				break

@@ -248,15 +248,18 @@ func (voiceGw *voiceGateway) Close() error {
 }
 
 func voiceGwHeartbeat(voiceGw *voiceGateway, ctx context.Context) error {
-	for {
+	interval := time.Duration(voiceGw.heartbeatIntv) * time.Millisecond
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	for {	
 		if err := vSend(voiceGw.ws, ctx, &cachedHeartbeat); err != nil {
 			return err
 		}
 		select {
+		case <-timer.C:
+			timer.Reset(interval)
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(
-			time.Duration(voiceGw.heartbeatIntv) * time.Millisecond):
 		}
 	}
 }

@@ -341,13 +341,15 @@ func (gw *Gateway) JoinChannel(rootctx context.Context, guildId string, channelI
 		return err
 	}
 
-	// Wait for channel join or context cancel/timeout
+	// Wait for channel join, context cancel, or timeout
+	timer := time.NewTimer(joinChannelTimeout)
+	defer timer.Stop()
 	select {
 	case joinedId := <-guild.joinedChnl:
 		if joinedId != channelId {
 			return errors.New("unable to join channel")
 		}
-	case <-time.After(joinChannelTimeout):
+	case <-timer.C:
 		return errors.New("channel join timeout")
 	case <-rootctx.Done():
 		return rootctx.Err()
@@ -390,6 +392,15 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 		return err
 	}
 	defer f.Close()
+
+	// Create timer to timeout voice packet sends
+	timer := time.NewTimer(voicePacketTimeout)
+	defer timer.Stop()
+	// NewTimer immediately starts the timer, so stop
+	// it and let it Reset in the loop
+	if !timer.Stop() {
+		<-timer.C
+	}
 
 	// https://datatracker.ietf.org/doc/html/rfc3533#section-6
 	headerBuf := [pageHeaderLen]byte{}
@@ -439,10 +450,15 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 				pLen = 0
 				pStart = 0
 				pNum += 1
+				timer.Reset(voicePacketTimeout)
 				select {
 				case guild.packets <- packet:
 					// Successfully sent packet to voice gw
-				case <-time.After(voicePacketTimeout):
+					// Stop and drain the timer
+					if !timer.Stop() {
+						<-timer.C
+					}
+				case <-timer.C:
 					return errors.New("packet send timeout")
 				case <-rootctx.Done():
 					return rootctx.Err()
@@ -624,16 +640,19 @@ func notifyJoin(guild *guildState, channelId string) {
 
 func gwHeartbeat(gw *Gateway, ctx context.Context) error {
 	heartbeat := gatewaySend{Op: heartbeat}
+	interval := time.Duration(gw.heartbeatIntv) * time.Millisecond
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
 	for {
 		heartbeat.D, _ = json.Marshal(gw.lastSeq)
 		if err := send(gw.ws, ctx, &heartbeat); err != nil {
 			return err
 		}
 		select {
+		case <-timer.C:
+			timer.Reset(interval)
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(
-			time.Duration(gw.heartbeatIntv) * time.Millisecond):
 		}
 	}
 }

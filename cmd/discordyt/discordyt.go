@@ -10,7 +10,7 @@ import (
 	"github.com/kausikk/discordyt/internal"
 )
 
-const VERSION = "v0.2.1"
+const VERSION = "v0.3"
 
 func main() {
 	// Read env variables

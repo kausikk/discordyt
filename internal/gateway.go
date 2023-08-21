@@ -296,9 +296,12 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 
 func (gw *Gateway) JoinChannel(rootctx context.Context, guildId string, channelId string) error {
 	// Check if bot is already in channel
+	// or if attempting to leave channel
+	// when it never joined
 	gw.guildStatesLock.Lock()
 	guild, ok := gw.guildStates[guildId]
-	if ok && guild.botChnlId == channelId {
+	if (ok && guild.botChnlId == channelId) ||
+		(!ok && channelId == NullChannelId) {
 		gw.guildStatesLock.Unlock()
 		return nil
 	}
@@ -396,11 +399,8 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 	// Create timer to timeout voice packet sends
 	timer := time.NewTimer(voicePacketTimeout)
 	defer timer.Stop()
-	// NewTimer immediately starts the timer, so stop
-	// it and let it Reset in the loop
-	if !timer.Stop() {
-		<-timer.C
-	}
+	// Stop it immediately
+	timer.Stop()
 
 	// https://datatracker.ietf.org/doc/html/rfc3533#section-6
 	headerBuf := [pageHeaderLen]byte{}
@@ -454,15 +454,12 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 				select {
 				case guild.packets <- packet:
 					// Successfully sent packet to voice gw
-					// Stop and drain the timer
-					if !timer.Stop() {
-						<-timer.C
-					}
 				case <-timer.C:
 					return errors.New("packet send timeout")
 				case <-rootctx.Done():
 					return rootctx.Err()
 				}
+				timer.Stop()
 				if pNum == packetBurst {
 					time.Sleep(packetDuration * packetBurst)
 					pNum = 0

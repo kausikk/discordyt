@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/kausikk/discordyt/internal"
 )
@@ -24,6 +25,8 @@ const ytdlpFormat = "ba[acodec=opus][asr=48K][ext=webm][audio_channels=2]"
 
 const maxSongQLen = 10
 const maxSongQMsg = "Too many songs in queue (max 10)"
+
+const inactiveTimeout = 5 * time.Minute
 
 type interactionRespType int64
 
@@ -88,10 +91,20 @@ type findResult struct {
 }
 
 func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan internal.InteractionData, guildId, botAppId, ytApiKey, songFolder string) {
+	// Create timer to timeout during inactivity
+	timer := time.NewTimer(inactiveTimeout)
+	defer timer.Stop()
+	// Stop it immediately
+	timer.Stop()
+
+	// Init song queue
 	q := &songQueue{}
-	doneFind := make(chan findResult, 5)
-	donePlay := make(chan songid, 5)
+	doneFind := make(chan findResult, maxSongQLen)
+	donePlay := make(chan songid, maxSongQLen)
+
+	// Start handle loop
 	for {
+		timer.Reset(inactiveTimeout)
 		select {
 		case data := <-cmd:
 			switch data.Data.Name {
@@ -174,6 +187,7 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 				// Try to join channel
 				err := gw.JoinChannel(ctx, guildId, head.chnlId)
 				if err != nil {
+					log.Println("join err:", err)
 					patchResp(
 						botAppId, head.token,
 						"Could not join channel",
@@ -227,6 +241,7 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 				// Try to join channel
 				err := gw.JoinChannel(ctx, guildId, head.chnlId)
 				if err != nil {
+					log.Println("join err:", err)
 					q.pop()
 					continue
 				}
@@ -240,9 +255,22 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 				}()
 				break
 			}
+		case <-timer.C:
+			// Check if there is a song in the queue
+			head := q.head()
+			if head != nil {
+				break
+			}
+			// No cmds or downloads were recently complete,
+			// so leave the voice channnel
+			err := gw.JoinChannel(ctx, guildId, internal.NullChannelId)
+			if err != nil {
+				log.Println("join err:", err)
+			}
 		case <-ctx.Done():
 			return
 		}
+		timer.Stop()
 	}
 }
 

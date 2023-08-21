@@ -87,62 +87,65 @@ type findResult struct {
 	path  string
 }
 
-func guildHandler(gw *internal.Gateway, ctx context.Context, play, stop chan internal.InteractionData, guildId, botAppId, ytApiKey, songFolder string) {
+func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan internal.InteractionData, guildId, botAppId, ytApiKey, songFolder string) {
 	q := &songQueue{}
 	doneFind := make(chan findResult, 5)
 	donePlay := make(chan songid, 5)
 	for {
 		select {
-		case data := <-play:
-			// Check if user is in a channel
-			if data.ChnlId == "" {
-				postResp(
-					data.Id, data.Token,
-					"User is not in a channel (try re-joining)",
-					channelMessageWithSource,
-				)
-				break
-			}
-			// Add song to queue
-			id, ok := q.push(songQueueItem{
-				token: data.Token, chnlId: data.ChnlId,
-			})
-			// Not enough room in queue
-			if !ok {
-				postResp(
-					data.Id, data.Token, maxSongQMsg,
-					channelMessageWithSource,
-				)
-				break
-			}
-			// Start finding song
-			postResp(
-				data.Id, data.Token, "Finding song...",
-				deferredChannelMessageWithSource,
-			)
-			go find(
-				ctx, data.Data.Options[0].Value,
-				ytApiKey, songFolder,
-				id, doneFind,
-			)
-		case data := <-stop:
-			// Stop current audio and leave channel
-			postResp(
-				data.Id, data.Token, "Stopped",
-				channelMessageWithSource,
-			)
-			gw.StopAudio(ctx, guildId)
-			gw.JoinChannel(ctx, guildId, nil)
-			// Respond to interaction for songs
-			// that have not yet been found
-			for head := q.head(); head != nil; head = q.head() {
-				if !head.found {
-					patchResp(
-						botAppId, head.token,
-						"Stopped",
+		case data := <-cmd:
+			switch data.Data.Name {
+			case "play":
+				// Check if user is in a channel
+				if data.ChnlId == "" {
+					postResp(
+						data.Id, data.Token,
+						"User is not in a channel (try re-joining)",
+						channelMessageWithSource,
 					)
+					break
 				}
-				q.pop()
+				// Add song to queue
+				id, ok := q.push(songQueueItem{
+					token: data.Token, chnlId: data.ChnlId,
+				})
+				// Not enough room in queue
+				if !ok {
+					postResp(
+						data.Id, data.Token, maxSongQMsg,
+						channelMessageWithSource,
+					)
+					break
+				}
+				// Start finding song
+				postResp(
+					data.Id, data.Token, "Finding song...",
+					deferredChannelMessageWithSource,
+				)
+				go find(
+					ctx, data.Data.Options[0].Value,
+					ytApiKey, songFolder,
+					id, doneFind,
+				)
+			case "stop":
+				// Stop current audio and leave channel
+				postResp(
+					data.Id, data.Token, "Stopped",
+					channelMessageWithSource,
+				)
+				gw.StopAudio(ctx, guildId)
+				gw.JoinChannel(ctx, guildId, nil)
+				// Respond to interaction for songs
+				// that have not yet been found
+				for head := q.head(); head != nil; head = q.head() {
+					if !head.found {
+						patchResp(
+							botAppId, head.token,
+							"Stopped",
+						)
+					}
+					q.pop()
+				}
 			}
 		case res := <-doneFind:
 			// Store results in song

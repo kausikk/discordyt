@@ -27,9 +27,10 @@ func main() {
 	sigint := make(chan os.Signal, 1)
 	signal.Notify(sigint, os.Interrupt)
 
-	// Start gateway
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Start gateway
 	gw, err := internal.Connect(
 		ctx,
 		config["BOT_TOKEN"],
@@ -60,35 +61,23 @@ func main() {
 	}()
 
 	// Start command loop
-	type cmdChnls struct {
-		play chan internal.InteractionData
-		stop chan internal.InteractionData
-	}
-	guildChnls := make(map[string]cmdChnls)
+	guildChnls := make(map[string]chan internal.InteractionData)
 	go func() {
 		for {
 			select {
 			case data := <-gw.Cmd():
-				chnls, ok := guildChnls[data.GuildId]
+				chnl, ok := guildChnls[data.GuildId]
 				if !ok {
-					chnls = cmdChnls{
-						make(chan internal.InteractionData),
-						make(chan internal.InteractionData),
-					}
-					guildChnls[data.GuildId] = chnls
-					go guildHandler(
-						gw, ctx, chnls.play, chnls.stop, data.GuildId,
+					chnl = make(chan internal.InteractionData)
+					guildChnls[data.GuildId] = chnl
+					go guildCmdHandler(
+						gw, ctx, chnl, data.GuildId,
 						config["BOT_APP_ID"],
 						config["YT_API_KEY"],
 						config["SONG_FOLDER"],
 					)
 				}
-				switch data.Data.Name {
-				case "play":
-					chnls.play <- data
-				case "stop":
-					chnls.stop <- data
-				}
+				chnl <- data
 			case <-ctx.Done():
 				return
 			}

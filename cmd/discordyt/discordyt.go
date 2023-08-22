@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -10,11 +11,11 @@ import (
 	"github.com/kausikk/discordyt/internal"
 )
 
-const VERSION = "v0.3.1"
+const VERSION = "v0.3.2"
 
 func main() {
 	// Read env variables
-	log.Println("Version:", VERSION)
+	fmt.Println("Version:", VERSION)
 	if len(os.Args) < 2 {
 		log.Fatal("missing .env file")
 	}
@@ -22,6 +23,19 @@ func main() {
 	if err != nil {
 		log.Fatal("unable to parse .env file")
 	}
+
+	// Create log file
+	f, err := os.OpenFile(
+		config["LOG_FILE"],
+		os.O_WRONLY | os.O_CREATE | os.O_APPEND,
+		0644,
+	)
+	if err != nil {
+		log.Fatal("failed to open log file")
+	}
+	defer f.Close()
+	log.SetOutput(f)
+	log.Println("Version:", VERSION)
 
 	// Prepare sig int (Ctrl + C) channel
 	sigint := make(chan os.Signal, 1)

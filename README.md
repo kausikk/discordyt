@@ -11,10 +11,10 @@ TODO:
 - unhandled interaction resp errors
 - proper error definitions (replace error.New)
 - gateway properties should be from environment
-- add runtime to "Playing song" response
 - add skip command
 
 Done:
+- add runtime to "Playing song" response -> done
 - Use UDP socket thread to monitor silence and leave channel -> done, but leave channel is handled outside of socket thread
 - change guild state to store channel id as string instead of *string -> done
 - play queue!!! -> done, but not thoroughly tested

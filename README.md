@@ -7,14 +7,15 @@ TODO:
 - unhandlded json encode/decodes
 - rename *_consts.go files
 - add state handling to the start of Gateway methods
-- Use UDP socket thread to monitor silence and leave channel
 - send silences frames after song ends
 - unhandled interaction resp errors
 - proper error definitions (replace error.New)
 - gateway properties should be from environment
 - add runtime to "Playing song" response
+- add skip command
 
 Done:
+- Use UDP socket thread to monitor silence and leave channel -> done, but leave channel is handled outside of socket thread
 - change guild state to store channel id as string instead of *string -> done
 - play queue!!! -> done, but not thoroughly tested
 - better way to build string buffer for response -> done

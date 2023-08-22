@@ -13,6 +13,8 @@ import (
 	"nhooyr.io/websocket"
 )
 
+const packetRecvTimeout = 5 * time.Second
+
 var cachedSelectPrtcl = voiceGwPayload{
 	Op: voiceSelectPrtcl,
 	D:  cachedSelectPrtclData,
@@ -275,20 +277,36 @@ func voiceGwUdp(voiceGw *voiceGateway, ctx context.Context) {
 	}
 	defer sock.Close()
 
-	// Send speaking payload
+	// Initialize speaking and silent payloads
 	data, _ := json.Marshal(voiceSpeakingData{
 		Speaking: 1,
 		Delay:    0,
 		Ssrc:     voiceGw.ssrc,
 	})
-	payload := voiceGwPayload{
-		Op: voiceSpeaking,
-		D:  data,
+	speakingPayload := voiceGwPayload{
+		Op: voiceSpeaking, D: data,
 	}
-	err = vSend(voiceGw.ws, ctx, &payload)
+	data, _ = json.Marshal(voiceSpeakingData{
+		Speaking: 0,
+		Delay:    0,
+		Ssrc:     voiceGw.ssrc,
+	})
+	silentPayload := voiceGwPayload{
+		Op: voiceSpeaking, D: data,
+	}
+
+	// Indicate speaking
+	err = vSend(voiceGw.ws, ctx, &speakingPayload)
 	if err != nil {
 		return
 	}
+	isSpeaking := true
+
+	// Create timer to timeout during no audio
+	timer := time.NewTimer(packetRecvTimeout)
+	defer timer.Stop()
+	// Stop it immediately
+	timer.Stop()
 
 	// xsalsa20_poly1305 stuff, see
 	// https://github.com/bwmarrin/discordgo
@@ -306,6 +324,14 @@ func voiceGwUdp(voiceGw *voiceGateway, ctx context.Context) {
 	for {
 		select {
 		case packet := <-voiceGw.packets:
+			if !isSpeaking {
+				// Indicate speaking
+				err = vSend(voiceGw.ws, ctx, &speakingPayload)
+				if err != nil {
+					return
+				}
+				isSpeaking = true
+			}
 			// more xsalsa20_poly1305 stuff
 			binary.BigEndian.PutUint16(header[2:], sequence)
 			binary.BigEndian.PutUint32(header[4:], timestamp)
@@ -322,6 +348,17 @@ func voiceGwUdp(voiceGw *voiceGateway, ctx context.Context) {
 			if err != nil {
 				log.Println("udp err:", err)
 				return
+			}
+			timer.Stop()
+			timer.Reset(packetRecvTimeout)
+		case <-timer.C:
+			if isSpeaking {
+				// Indicate silent
+				err = vSend(voiceGw.ws, ctx, &silentPayload)
+				if err != nil {
+					return
+				}
+				isSpeaking = false
 			}
 		case <-ctx.Done():
 			return

@@ -18,7 +18,7 @@ const discordWSS = "wss://gateway.discord.gg"
 const defaultTimeout = 2 * time.Minute
 const connectVoiceTimeout = 10 * time.Second
 const joinChannelTimeout = 10 * time.Second
-const voicePacketTimeout = 5 * time.Second
+const packetSendTimeout = 5 * time.Second
 
 const NullChannelId = ""
 
@@ -58,9 +58,6 @@ const packetBurst = 10
 // Technically this should be 20 ms, but made it slightly
 // shorter for better audio continuity
 const packetDuration = 19800 * time.Microsecond
-
-// Size of buffer channel for sending commands
-const cmbBufLen = 10
 
 type gwState int8
 
@@ -113,7 +110,7 @@ func Connect(rootctx context.Context, botToken, botAppId, botPublicKey, songFold
 		songFolder:    songFolder,
 		userOccupancy: make(map[string]string),
 		guildStates:   make(map[string]*guildState),
-		cmd:           make(chan InteractionData, cmbBufLen),
+		cmd:           make(chan InteractionData),
 	}
 	err := gw.Reconnect(rootctx)
 	return &gw, err
@@ -397,7 +394,7 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 	defer f.Close()
 
 	// Create timer to timeout voice packet sends
-	timer := time.NewTimer(voicePacketTimeout)
+	timer := time.NewTimer(packetSendTimeout)
 	defer timer.Stop()
 	// Stop it immediately
 	timer.Stop()
@@ -450,7 +447,7 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) erro
 				pLen = 0
 				pStart = 0
 				pNum += 1
-				timer.Reset(voicePacketTimeout)
+				timer.Reset(packetSendTimeout)
 				select {
 				case guild.packets <- packet:
 					// Successfully sent packet to voice gw
@@ -564,7 +561,12 @@ func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) erro
 		gw.userOccLock.RLock()
 		interData.ChnlId = gw.userOccupancy[key]
 		gw.userOccLock.RUnlock()
-		gw.cmd <- interData
+		select {
+		case gw.cmd<-interData:
+			// Successfully passed command
+		default:
+			// Do nothing
+		}
 	case "VOICE_CHANNEL_EFFECT_SEND":
 		// Do nothing
 	case "RESUMED":

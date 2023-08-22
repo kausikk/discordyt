@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -14,6 +13,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"strconv"
+	"errors"
 
 	"github.com/kausikk/discordyt/internal"
 )
@@ -104,7 +105,7 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 
 	// Start handle loop
 	for {
-		timer.Reset(inactiveTimeout)
+		startInactiveTimer := true
 		select {
 		case data := <-cmd:
 			switch data.Data.Name {
@@ -131,6 +132,7 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 					break
 				}
 				// Start finding song
+				log.Println("finding", data.Data.Options[0].Value)
 				postResp(
 					data.Id, data.Token, "Finding song...",
 					deferredChannelMessageWithSource,
@@ -166,6 +168,7 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 			if song == nil {
 				break
 			}
+			log.Println("done finding", res.path)
 			song.found = true
 			song.skip = !res.pass
 			song.title = res.title
@@ -203,10 +206,12 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 					"Playing "+head.title,
 				)
 				go func() {
+					log.Println("start playing")
 					err := gw.PlayAudio(ctx, guildId, head.path)
 					if err != nil {
 						log.Println("play err:", err)
 					}
+					log.Println("done playing", head.path)
 					donePlay <- head.id
 				}()
 			} else {
@@ -247,10 +252,12 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 				}
 				// Play next song
 				go func() {
+					log.Println("start playing")
 					err := gw.PlayAudio(ctx, guildId, head.path)
 					if err != nil {
 						log.Println("play err:", err)
 					}
+					log.Println("done playing", head.path)
 					donePlay <- head.id
 				}()
 				break
@@ -261,6 +268,9 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 			if head != nil {
 				break
 			}
+			// Stop inactive timer
+			log.Println("inactive, leave channel")
+			startInactiveTimer = false
 			// No cmds or downloads were recently complete,
 			// so leave the voice channnel
 			err := gw.JoinChannel(ctx, guildId, internal.NullChannelId)
@@ -271,6 +281,9 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 			return
 		}
 		timer.Stop()
+		if startInactiveTimer {
+			timer.Reset(inactiveTimeout)
+		}
 	}
 }
 
@@ -313,17 +326,22 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 	}
 
 	// Extract song data from top result
+	if len(results.Items) < 1 {
+		log.Println("no search results, query:", query)
+		done <- findResult{
+			id: id, pass: false,
+		}
+		return
+	}
 	title := html.UnescapeString(
 		results.Items[0].Snippet.Title)
 	songId := results.Items[0].Id.VideoId
-	songPath := songFolder + "/" + songId + ".opus"
 
 	// Check if file already exists
 	// Otherwise download it
-	if !checkExists(songPath) {
+	songPath, dur, ok := search(songFolder, songId, "opus")
+	if !ok {
 		err := func() error {
-			log.Println("downloading", songId)
-
 			// Download from youtube with yt-dlp
 			cmd := exec.Command(
 				"conda",
@@ -331,7 +349,7 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 				"-n", "yt-bot-env",
 				"yt-dlp",
 				"-f", ytdlpFormat,
-				"-o", songFolder+"/%(id)s.%(ext)s",
+				"-o", songFolder+"/%(id)s-%(duration)s.%(ext)s",
 				songId,
 			)
 			stdErr := strings.Builder{}
@@ -343,8 +361,34 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 				return err
 			}
 
+			// Check if webm was created
+			webmPath, dur, ok := search(songFolder, songId, "webm")
+			if !ok {
+				return errors.New("could not find webm file")
+			}
+
+			// Make duration human-readable
+			sec, err := strconv.Atoi(dur)
+			if err != nil {
+				return errors.New("invalid duration")
+			}
+			if sec >= 360 {
+				dur = fmt.Sprintf(
+					"%d:%02d:%02d",
+					sec / 3600,
+					(sec / 60) % 60,
+					sec % 60,
+				)
+			} else {
+				dur = fmt.Sprintf(
+					"%d:%02d",
+					sec / 60,
+					sec % 60,
+				)
+			}
+
 			// Convert to opus file
-			webmPath := songFolder + "/" + songId + ".webm"
+			opusPath := songFolder + "/" + songId + "-" + dur + ".opus"
 			cmd = exec.Command(
 				"ffmpeg",
 				"-i", webmPath,
@@ -354,7 +398,7 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 				"-f", "opus",
 				"-ar", "48000",
 				"-ac", "2",
-				songPath,
+				opusPath,
 			)
 			stdErr.Reset()
 			cmd.Stderr = &stdErr
@@ -370,8 +414,9 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 		}()
 
 		// Check that file exists
-		if err != nil || !checkExists(songPath) {
-			log.Println("file doesn't exist:", songId)
+		songPath, dur, ok = search(songFolder, songId, "opus")
+		if err != nil || !ok {
+			log.Println("download failed:", songId, err)
 			done <- findResult{
 				id: id, pass: false,
 			}
@@ -384,7 +429,7 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 	}
 
 	done <- findResult{
-		id, true, title, songPath,
+		id, true, title + " (" + dur + ")", songPath,
 	}
 }
 
@@ -432,9 +477,39 @@ func patchResp(id, token, msg string) error {
 	return nil
 }
 
-func checkExists(fpath string) bool {
-	_, err := os.Stat(fpath)
-	return !errors.Is(err, os.ErrNotExist)
+func search(songFolder, songId, ext string) (string, string, bool) {
+	f, err := os.Open(songFolder)
+	if err != nil {
+		return "", "", false
+	}
+	defer f.Close()
+
+	names, err := f.Readdirnames(0)
+	if err != nil {
+		return "", "", false
+	}
+
+	// Looking for a filename of the form:
+	// SONGID + '-' + DURATION + '.' + EXT
+	nId := len(songId)
+	nExt := len(ext)
+	minLen := nId + 2 + nExt
+	for _, name := range names {
+		nName := len(name)
+		if nName < minLen {
+			continue
+		}
+		if name[:nId] != songId {
+			continue
+		}
+		if name[nName-nExt:nName] != ext {
+			continue
+		}
+		return songFolder + "/" + name,
+			name[nId+1:nName-nExt-1],
+			true
+	}
+	return "", "", false
 }
 
 var _uuid songid

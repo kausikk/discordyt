@@ -562,7 +562,7 @@ func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) erro
 		interData.ChnlId = gw.userOccupancy[key]
 		gw.userOccLock.RUnlock()
 		select {
-		case gw.cmd<-interData:
+		case gw.cmd <- interData:
 			// Successfully passed command
 		default:
 			// Do nothing

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -11,10 +12,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
-	"strconv"
-	"errors"
 
 	"github.com/kausikk/discordyt/internal"
 )
@@ -375,15 +375,15 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 			if sec >= 360 {
 				dur = fmt.Sprintf(
 					"%d:%02d:%02d",
-					sec / 3600,
-					(sec / 60) % 60,
-					sec % 60,
+					sec/3600,
+					(sec/60)%60,
+					sec%60,
 				)
 			} else {
 				dur = fmt.Sprintf(
 					"%d:%02d",
-					sec / 60,
-					sec % 60,
+					sec/60,
+					sec%60,
 				)
 			}
 
@@ -506,7 +506,7 @@ func search(songFolder, songId, ext string) (string, string, bool) {
 			continue
 		}
 		return songFolder + "/" + name,
-			name[nId+1:nName-nExt-1],
+			name[nId+1 : nName-nExt-1],
 			true
 	}
 	return "", "", false

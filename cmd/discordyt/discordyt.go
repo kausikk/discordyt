@@ -21,20 +21,16 @@ func main() {
 	}
 	config, err := godotenv.Read(os.Args[1])
 	if err != nil {
-		log.Fatal("unable to parse .env file")
+		log.Fatal("unable to parse .env file", err)
 	}
 
 	// Create log file
-	f, err := os.OpenFile(
-		config["LOG_FILE"],
-		os.O_WRONLY | os.O_CREATE | os.O_APPEND,
-		0644,
-	)
+	logger, err := internal.Open(config["LOG_FOLDER"])
 	if err != nil {
-		log.Fatal("failed to open log file")
+		log.Fatal("failed to open log file", err)
 	}
-	defer f.Close()
-	log.SetOutput(f)
+	defer logger.Close()
+	log.SetOutput(logger)
 	log.Println("Version:", VERSION)
 
 	// Prepare sig int (Ctrl + C) channel

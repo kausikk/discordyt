@@ -12,6 +12,8 @@ TODO:
 - proper error definitions (replace error.New)
 - gateway properties should be from environment
 - add skip command
+- change int64 to int
+- better logging (split across files, use slog, log exceptions?)
 
 Done:
 - add runtime to "Playing song" response -> done
@@ -36,4 +38,4 @@ Done:
 
 Ideas:
 - Connect and Listen should be combined (Launch) -> No
-- send channel leave when startVoiceGw fails?
+- send channel leave when startVoiceGw fails? -> should test/do this

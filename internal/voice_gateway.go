@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"time"
 
@@ -164,7 +164,11 @@ func (voiceGw *voiceGateway) Serve(rootctx context.Context) error {
 		isReading := true
 		for isReading {
 			if err = vRead(voiceGw.ws, gwCtx, &payload); err != nil {
-				log.Println("voice gw read err:", err)
+				slog.Error(
+					"voice read fail",
+					"g", voiceGw.guildId,
+					"e", err,
+				)
 				isReading = false
 				break
 			}
@@ -196,10 +200,13 @@ func (voiceGw *voiceGateway) Serve(rootctx context.Context) error {
 
 		// Check if gateway can be resumed
 		status := websocket.CloseStatus(err)
-		log.Printf("voice close code: %d\n", status)
+		slog.Info("voice close", "g", voiceGw.guildId, "code", status)
 		canResume, exists := voiceValidResumeCodes[status]
 		if !canResume && exists {
-			log.Println("voice can't resume")
+			slog.Error(
+				"voice resume unable",
+				"g", voiceGw.guildId,
+			)
 			return err
 		}
 
@@ -346,7 +353,7 @@ func voiceGwUdp(voiceGw *voiceGateway, ctx context.Context) {
 			)
 			_, err := sock.Write(encrypted)
 			if err != nil {
-				log.Println("udp err:", err)
+				slog.Error("udp fail", "g", voiceGw.guildId, "e", err)
 				return
 			}
 			timer.Stop()
@@ -375,7 +382,10 @@ func vRead(c *websocket.Conn, ctx context.Context, payload *voiceGwPayload) erro
 	}
 	json.Unmarshal(raw, payload) // Unhandled err
 	if payload.Op != voiceHeartbeatAck {
-		log.Println("voice read: op:", voiceOpcodeNames[payload.Op])
+		slog.Debug(
+			"voice read",
+			"op", voiceOpcodeNames[payload.Op],
+		)
 	}
 	return err
 }
@@ -386,7 +396,10 @@ func vSend(c *websocket.Conn, ctx context.Context, payload *voiceGwPayload) erro
 	defer cancel()
 	err := c.Write(ctx, websocket.MessageText, encoded)
 	if payload.Op != voiceHeartbeat {
-		log.Println("voice send: op:", voiceOpcodeNames[payload.Op])
+		slog.Debug(
+			"voice send",
+			"op", voiceOpcodeNames[payload.Op],
+		)
 	}
 	return err
 }

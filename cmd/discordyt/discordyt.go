@@ -3,35 +3,41 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 
 	"github.com/joho/godotenv"
 	"github.com/kausikk/discordyt/internal"
+	"github.com/kausikk/discordyt/internal/splitlog"
 )
 
-const VERSION = "v0.3.2"
+const VERSION = "v0.3.3"
 
 func main() {
 	// Read env variables
-	fmt.Println("Version:", VERSION)
+	fmt.Println("discordyt", VERSION)
 	if len(os.Args) < 2 {
-		log.Fatal("missing .env file")
+		slog.Error(".env missing")
+		os.Exit(1)
 	}
 	config, err := godotenv.Read(os.Args[1])
 	if err != nil {
-		log.Fatal("unable to parse .env file", err)
+		slog.Error(".env parse fail", "e", err)
+		os.Exit(1)
 	}
 
-	// Create log file
-	logger, err := internal.Open(config["LOG_FOLDER"])
+	// Create log file. logger also redirects
+	// stderr to the currently open log file.
+	logger, err := splitlog.Open(config["LOG_FOLDER"])
 	if err != nil {
-		log.Fatal("failed to open log file", err)
+		slog.Error("logger open fail", "e", err)
+		os.Exit(1)
 	}
 	defer logger.Close()
-	log.SetOutput(logger)
-	log.Println("Version:", VERSION)
+	slogger := slog.New(slog.NewTextHandler(logger, nil))
+	slog.SetDefault(slogger)
+	slog.Info("discordyt", "v", VERSION)
 
 	// Prepare sig int (Ctrl + C) channel
 	sigint := make(chan os.Signal, 1)
@@ -49,7 +55,8 @@ func main() {
 		config["SONG_FOLDER"],
 	)
 	if err != nil {
-		log.Fatal("gateway connect failed:", err)
+		slog.Error("gw connect fail", "e", err)
+		os.Exit(1)
 	}
 
 	// Start Listen/Reconnect loop
@@ -58,10 +65,10 @@ func main() {
 			select {
 			default:
 				err = gw.Serve(ctx)
-				log.Println("restart gateway:", err)
+				slog.Error("gw serve fail", "e", err)
 				err = gw.Reconnect(ctx)
 				if err != nil {
-					log.Println("gateway connect failed:", err)
+					slog.Error("gw reconnect fail", "e", err)
 					return
 				}
 			case <-ctx.Done():
@@ -96,6 +103,6 @@ func main() {
 
 	// Wait for sig int
 	<-sigint
-	log.Println("closing...")
+	slog.Info("closing...")
 	gw.Close()
 }

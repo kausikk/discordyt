@@ -13,9 +13,9 @@ TODO:
 - gateway properties should be from environment
 - add skip command
 - change int64 to int
-- better logging (split across files, use slog, log exceptions?)
 
 Done:
+- better logging (split across files, use slog, log exceptions?) -> done
 - add runtime to "Playing song" response -> done
 - Use UDP socket thread to monitor silence and leave channel -> done, but leave channel is handled outside of socket thread
 - change guild state to store channel id as string instead of *string -> done

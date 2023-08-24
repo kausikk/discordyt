@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
@@ -197,7 +197,7 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 		isReading := true
 		for isReading {
 			if err = read(gw.ws, rootctx, &readPayload); err != nil {
-				log.Println("gw read err:", err)
+				slog.Error("gw read fail", "e", err)
 				isReading = false
 				break
 			}
@@ -244,10 +244,10 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 
 		// Check if gateway can be resumed
 		status := websocket.CloseStatus(err)
-		log.Printf("close code: %d\n", status)
+		slog.Info("gw close", "code", status)
 		canResume, exists := validResumeCodes[status]
 		if !canResume && exists {
-			log.Println("can't resume")
+			slog.Error("gw resume unable")
 			return err
 		}
 
@@ -574,7 +574,7 @@ func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) erro
 	case "VOICE_CHANNEL_STATUS_UPDATE":
 		// Do nothing
 	default:
-		log.Println("unhandled dispatch:", payload.T)
+		slog.Error("gw unknown dispatch", "type", payload.T)
 	}
 	return nil
 }
@@ -668,8 +668,11 @@ func read(c *websocket.Conn, ctx context.Context, payload *gatewayRead) error {
 	payload.D = nil
 	json.Unmarshal(raw, payload) // Unhandled err
 	if payload.Op != heartbeatAck {
-		log.Printf("read: op: %s s: %d t: %s\n",
-			opcodeNames[payload.Op], payload.S, payload.T)
+		slog.Debug(
+			"gw read",
+			"op", opcodeNames[payload.Op],
+			"s", payload.S, "t", payload.T,
+		)
 	}
 	return err
 }
@@ -680,7 +683,7 @@ func send(c *websocket.Conn, ctx context.Context, payload *gatewaySend) error {
 	defer cancel()
 	err := c.Write(ctx, websocket.MessageText, encoded)
 	if payload.Op != opcode(heartbeat) {
-		log.Println("send: op:", opcodeNames[payload.Op])
+		slog.Debug("gw send", "op", opcodeNames[payload.Op])
 	}
 	return err
 }

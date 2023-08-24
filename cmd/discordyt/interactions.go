@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"html"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -92,16 +92,27 @@ type findResult struct {
 }
 
 func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan internal.InteractionData, guildId, botAppId, ytApiKey, songFolder string) {
+	// Init song queue
+	q := &songQueue{}
+	doneFind := make(chan findResult, maxSongQLen)
+	donePlay := make(chan songid, maxSongQLen)
+
+	play := func(path string, id songid) {
+		slog.Info("play start", "p", path, "g", guildId)
+		err := gw.PlayAudio(ctx, guildId, path)
+		if err != nil {
+			slog.Error("play fail", "e", err, "g", guildId)
+		} else {
+			slog.Info("play done", "g", guildId)
+		}
+		donePlay <- id
+	}
+
 	// Create timer to timeout during inactivity
 	timer := time.NewTimer(inactiveTimeout)
 	defer timer.Stop()
 	// Stop it immediately
 	timer.Stop()
-
-	// Init song queue
-	q := &songQueue{}
-	doneFind := make(chan findResult, maxSongQLen)
-	donePlay := make(chan songid, maxSongQLen)
 
 	// Start handle loop
 	for {
@@ -132,7 +143,12 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 					break
 				}
 				// Start finding song
-				log.Println("finding", data.Data.Options[0].Value)
+				slog.Info(
+					"find start",
+					"q", data.Data.Options[0].Value,
+					"g", guildId,
+					"c", data.ChnlId,
+				)
 				postResp(
 					data.Id, data.Token, "Finding song...",
 					deferredChannelMessageWithSource,
@@ -144,6 +160,7 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 				)
 			case "stop":
 				// Stop current audio and leave channel
+				slog.Info("stopping", "g", guildId)
 				postResp(
 					data.Id, data.Token, "Stopped",
 					channelMessageWithSource,
@@ -168,7 +185,11 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 			if song == nil {
 				break
 			}
-			log.Println("done finding", res.path)
+			slog.Info(
+				"find done",
+				"p", res.path,
+				"g", guildId,
+			)
 			song.found = true
 			song.skip = !res.pass
 			song.title = res.title
@@ -190,7 +211,12 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 				// Try to join channel
 				err := gw.JoinChannel(ctx, guildId, head.chnlId)
 				if err != nil {
-					log.Println("join err:", err)
+					slog.Error(
+						"join fail",
+						"g", guildId,
+						"c", head.chnlId,
+						"e", err,
+					)
 					patchResp(
 						botAppId, head.token,
 						"Could not join channel",
@@ -205,17 +231,10 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 					botAppId, head.token,
 					"Playing "+head.title,
 				)
-				go func() {
-					log.Println("start playing")
-					err := gw.PlayAudio(ctx, guildId, head.path)
-					if err != nil {
-						log.Println("play err:", err)
-					}
-					log.Println("done playing", head.path)
-					donePlay <- head.id
-				}()
+				go play(head.path, head.id)
 			} else {
 				// Tell user that it's added to queue
+				slog.Info("queued", "p", song.path)
 				patchResp(
 					botAppId, song.token,
 					"Added "+song.title+" to queue",
@@ -246,20 +265,17 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 				// Try to join channel
 				err := gw.JoinChannel(ctx, guildId, head.chnlId)
 				if err != nil {
-					log.Println("join err:", err)
+					slog.Error(
+						"join fail",
+						"g", guildId,
+						"c", head.chnlId,
+						"e", err,
+					)
 					q.pop()
 					continue
 				}
 				// Play next song
-				go func() {
-					log.Println("start playing")
-					err := gw.PlayAudio(ctx, guildId, head.path)
-					if err != nil {
-						log.Println("play err:", err)
-					}
-					log.Println("done playing", head.path)
-					donePlay <- head.id
-				}()
+				go play(head.path, head.id)
 				break
 			}
 		case <-timer.C:
@@ -269,13 +285,18 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 				break
 			}
 			// Stop inactive timer
-			log.Println("inactive, leave channel")
+			slog.Info("inactive leave", "g", guildId)
 			startInactiveTimer = false
 			// No cmds or downloads were recently complete,
 			// so leave the voice channnel
 			err := gw.JoinChannel(ctx, guildId, internal.NullChannelId)
 			if err != nil {
-				log.Println("join err:", err)
+				slog.Error(
+					"join fail",
+					"g", guildId,
+					"c", internal.NullChannelId,
+					"e", err,
+				)
 			}
 		case <-ctx.Done():
 			return
@@ -318,7 +339,7 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 		return &results, nil
 	}()
 	if err != nil {
-		log.Println("ytapi err:", err)
+		slog.Error("ytapi", "e", err)
 		done <- findResult{
 			id: id, pass: false,
 		}
@@ -327,7 +348,7 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 
 	// Extract song data from top result
 	if len(results.Items) < 1 {
-		log.Println("no search results, query:", query)
+		slog.Error("find no results", "q", query)
 		done <- findResult{
 			id: id, pass: false,
 		}
@@ -357,19 +378,21 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 			err = cmd.Run()
 			ytdlpErr := stdErr.String()
 			if err != nil || strings.Contains(ytdlpErr, "ERROR") {
-				log.Println("yt-dlp err:", ytdlpErr)
+				slog.Error("yt-dlp", "e", ytdlpErr)
 				return err
 			}
 
 			// Check if webm was created
 			webmPath, dur, ok := search(songFolder, songId, "webm")
 			if !ok {
+				slog.Error("find no webm")
 				return errors.New("could not find webm file")
 			}
 
 			// Make duration human-readable
 			sec, err := strconv.Atoi(dur)
 			if err != nil {
+				slog.Error("find invalid duration")
 				return errors.New("invalid duration")
 			}
 			if sec >= 360 {
@@ -404,7 +427,7 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 			cmd.Stderr = &stdErr
 			err = cmd.Run()
 			if err != nil {
-				log.Println("ffmpeg err:", stdErr.String())
+				slog.Error("ffmpeg", "e", stdErr.String())
 				return err
 			}
 
@@ -416,16 +439,16 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 		// Check that file exists
 		songPath, dur, ok = search(songFolder, songId, "opus")
 		if err != nil || !ok {
-			log.Println("download failed:", songId, err)
+			slog.Error("find no opus", "e", err)
 			done <- findResult{
 				id: id, pass: false,
 			}
 			return
 		}
 
-		log.Println("downloaded", songId)
+		slog.Info("find downloaded", "id", songId)
 	} else {
-		log.Println("already have", songId)
+		slog.Info("find already had", "id", songId)
 	}
 
 	done <- findResult{

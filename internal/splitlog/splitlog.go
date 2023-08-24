@@ -2,6 +2,7 @@ package splitlog
 
 import (
 	"os"
+	"sync"
 	"time"
 )
 
@@ -12,6 +13,7 @@ type Logger struct {
 	f      *os.File
 	folder string
 	num    int
+	l      sync.Mutex
 }
 
 func Open(logFolder string) (*Logger, error) {
@@ -28,6 +30,8 @@ func Open(logFolder string) (*Logger, error) {
 }
 
 func (log *Logger) Write(p []byte) (n int, err error) {
+	log.l.Lock()
+	defer log.l.Unlock()
 	n, err = log.f.Write(p)
 	if err != nil {
 		return n, err

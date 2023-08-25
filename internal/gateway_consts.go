@@ -82,7 +82,7 @@ var validResumeCodes = map[websocket.StatusCode]bool{
 type gatewayRead struct {
 	Op opcode          `json:"op"`
 	D  json.RawMessage `json:"d"`
-	S  int64           `json:"s"`
+	S  int             `json:"s"`
 	T  string          `json:"t"`
 }
 
@@ -92,13 +92,13 @@ type gatewaySend struct {
 }
 
 type helloData struct {
-	Interval int64           `json:"heartbeat_interval"`
+	Interval int             `json:"heartbeat_interval"`
 	Trace    json.RawMessage `json:"_trace"`
 }
 
 type identifyData struct {
 	Token      string             `json:"token"`
-	Intents    int64              `json:"intents"`
+	Intents    int                `json:"intents"`
 	Properties identifyProperties `json:"properties"`
 }
 type identifyProperties struct {
@@ -108,7 +108,7 @@ type identifyProperties struct {
 }
 
 type readyData struct {
-	V         int64  `json:"v"`
+	V         int    `json:"v"`
 	SessionId string `json:"session_id"`
 	ResumeUrl string `json:"resume_gateway_url"`
 }
@@ -116,7 +116,7 @@ type readyData struct {
 type resumeData struct {
 	Token     string `json:"token"`
 	SessionId string `json:"session_id"`
-	S         int64  `json:"seq"`
+	S         int    `json:"seq"`
 }
 
 type voiceStateData struct {
@@ -154,7 +154,7 @@ type InteractionUser struct {
 	Id string `json:"id"`
 }
 type InteractionSubData struct {
-	Type    int64               `json:"type"`
+	Type    int                 `json:"type"`
 	Name    string              `json:"name"`
 	Options []InteractionOption `json:"options"`
 }

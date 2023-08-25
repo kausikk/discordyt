@@ -1,19 +1,47 @@
 package internal
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
+	"os"
 	"time"
 
 	"golang.org/x/crypto/nacl/secretbox"
 	"nhooyr.io/websocket"
 )
 
-const packetRecvTimeout = 5 * time.Second
+const pageHeaderLen = 27
+const maxSegTableLen = 255
+const nonceLen = 24
+const rtpHeaderLen = 12
+
+// https://datatracker.ietf.org/doc/html/rfc3533#section-6
+var magicStr = []byte("OggS")
+
+// A packet is composed of at least one segment.
+// A packet is terminated by a segment of length < 255.
+// A segment of length = 255 indicates that a packet has only
+// been partially read, and must be completed by appending
+// the upcoming segments.
+const partialPacketLen = 255
+
+// 20 ms packet of 128 kbps opus audio is approximately
+// 128000/8 * 20/1000 = 320 bytes. Apply a safety factor.
+const maxPacketLen = 1024
+
+// Number of packets to send consecutively without waiting
+const packetBurst = 10
+
+// Technically this should be 20 ms, but made it slightly
+// shorter for better audio continuity
+const packetDuration = 19900 * time.Microsecond
+const burstDuration = packetBurst * packetDuration
 
 var cachedSelectPrtcl = voiceGwPayload{
 	Op: voiceSelectPrtcl,
@@ -49,16 +77,16 @@ type voiceGateway struct {
 	sessionId     string
 	token         string
 	endpoint      string
-	packets       <-chan []byte
+	songCtrl      chan songFile
+	songDone      chan songFile
 	ws            *websocket.Conn
-	heartbeatIntv int64
+	heartbeatIntv int
 	ssrc          uint32
-	ip            string
-	port          int64
+	url           string
 	secretKey     [32]byte
 }
 
-func voiceConnect(rootctx context.Context, packets <-chan []byte, botAppId, guildId, sessionId, token, endpoint string) (*voiceGateway, error) {
+func voiceConnect(rootctx context.Context, songCtrl, songDone chan songFile, botAppId, guildId, sessionId, token, endpoint string) (*voiceGateway, error) {
 	var err error
 	payload := voiceGwPayload{}
 
@@ -69,7 +97,8 @@ func voiceConnect(rootctx context.Context, packets <-chan []byte, botAppId, guil
 		sessionId: sessionId,
 		token:     token,
 		endpoint:  endpoint,
-		packets:   packets,
+		songCtrl:  songCtrl,
+		songDone:  songDone,
 	}
 
 	// Connect to Discord websocket
@@ -93,7 +122,7 @@ func voiceConnect(rootctx context.Context, packets <-chan []byte, botAppId, guil
 	json.Unmarshal(payload.D, &helloData)
 
 	// Store hb interval
-	voiceGw.heartbeatIntv = int64(helloData.Interval)
+	voiceGw.heartbeatIntv = int(helloData.Interval)
 
 	// Send IDENTIFY event
 	idData := voiceIdentifyData{
@@ -117,8 +146,9 @@ func voiceConnect(rootctx context.Context, packets <-chan []byte, botAppId, guil
 
 	// Store voice UDP data and ssrc
 	voiceGw.ssrc = readyData.Ssrc
-	voiceGw.ip = readyData.Ip
-	voiceGw.port = readyData.Port
+	voiceGw.url = fmt.Sprintf(
+		"%s:%d", readyData.Ip, readyData.Port,
+	)
 
 	// Send SELECT PROTOCOL event
 	if err = vSend(voiceGw.ws, rootctx, &cachedSelectPrtcl); err != nil {
@@ -157,8 +187,8 @@ func (voiceGw *voiceGateway) Serve(rootctx context.Context) error {
 	for {
 		// Start heartbeat
 		gwCtx, gwCancel := context.WithCancel(rootctx)
-		go voiceGwHeartbeat(voiceGw, gwCtx)
-		go voiceGwUdp(voiceGw, gwCtx)
+		go voiceGwHeartbeat(gwCtx, voiceGw)
+		go voiceGwUdp(gwCtx, voiceGw)
 
 		// Enter read loop
 		isReading := true
@@ -231,7 +261,7 @@ func (voiceGw *voiceGateway) Serve(rootctx context.Context) error {
 		json.Unmarshal(payload.D, &helloData)
 
 		// Store hb interval
-		voiceGw.heartbeatIntv = int64(helloData.Interval)
+		voiceGw.heartbeatIntv = int(helloData.Interval)
 
 		// Send RESUME event
 		resumeData := voiceResumeData{
@@ -256,7 +286,7 @@ func (voiceGw *voiceGateway) Close() error {
 	return nil
 }
 
-func voiceGwHeartbeat(voiceGw *voiceGateway, ctx context.Context) error {
+func voiceGwHeartbeat(ctx context.Context, voiceGw *voiceGateway) error {
 	interval := time.Duration(voiceGw.heartbeatIntv) * time.Millisecond
 	timer := time.NewTimer(interval)
 	defer timer.Stop()
@@ -273,17 +303,22 @@ func voiceGwHeartbeat(voiceGw *voiceGateway, ctx context.Context) error {
 	}
 }
 
-func voiceGwUdp(voiceGw *voiceGateway, ctx context.Context) {
-	// Open voice udp socket
-	url := fmt.Sprintf(
-		"%s:%d", voiceGw.ip, voiceGw.port,
-	)
-	sock, err := net.Dial("udp", url)
+func voiceGwUdp(ctx context.Context, voiceGw *voiceGateway) {
+	// Define log
+	log := func(err error) {
+		slog.Error(
+			"voice gw udp fail",
+			"g", voiceGw.guildId,
+			"e", err,
+		)
+	}
+	// Open udp socket
+	sock, err := net.Dial("udp", voiceGw.url)
 	if err != nil {
+		log(err)
 		return
 	}
 	defer sock.Close()
-
 	// Initialize speaking and silent payloads
 	data, _ := json.Marshal(voiceSpeakingData{
 		Speaking: 1,
@@ -301,72 +336,161 @@ func voiceGwUdp(voiceGw *voiceGateway, ctx context.Context) {
 	silentPayload := voiceGwPayload{
 		Op: voiceSpeaking, D: data,
 	}
-
-	// Indicate speaking
-	err = vSend(voiceGw.ws, ctx, &speakingPayload)
-	if err != nil {
-		return
-	}
-	isSpeaking := true
-
-	// Create timer to timeout during no audio
-	timer := time.NewTimer(packetRecvTimeout)
-	defer timer.Stop()
-	// Stop it immediately
-	timer.Stop()
-
+	// Initialize timestamp, opus buffer, encryption buffers
+	// https://datatracker.ietf.org/doc/html/rfc3533#section-6
 	// xsalsa20_poly1305 stuff, see
 	// https://github.com/bwmarrin/discordgo
 	// https://discord.com/developers/docs/topics/
 	// voice-connections#encrypting-and-sending-voice
+	var seq uint16 = 0
+	var tstamp uint32 = 0
+	headerBuf := [pageHeaderLen]byte{}
+	segTable := [maxSegTableLen]byte{}
+	packetBuf := [maxPacketLen]byte{}
 	nonce := [nonceLen]byte{}
-	header := make([]byte, rtpHeaderLen)
+	header := [rtpHeaderLen]byte{}
 	header[0] = 0x80
 	header[1] = 0x78
 	binary.BigEndian.PutUint32(header[8:], voiceGw.ssrc)
-
-	var sequence uint16
-	var timestamp uint32
-
+	// Define play
+	play := func(song songFile) (int64, error) {
+		var min int64 = time.Now().Unix()
+		var max, avg, samps int64
+		defer fmt.Print("\n")
+		pLen := 0
+		pNum := 0
+		pStart := 0
+		discard := 0
+		// Open file
+		f, err := os.Open(song.path)
+		if err != nil {
+			return song.offset, err
+		}
+		defer f.Close()
+		if song.offset > 0 {
+			_, err := f.Seek(song.offset, io.SeekCurrent)
+			if err != nil {
+				return song.offset, err
+			}
+		}
+		prevt := time.Now()
+		for {
+			pageLen := 0
+			n, err := io.ReadFull(f, headerBuf[:])
+			if err == io.EOF || n < pageHeaderLen {
+				break
+			}
+			if !bytes.Equal(magicStr, headerBuf[:4]) {
+				break
+			}
+			tableLen := int(headerBuf[26])
+			_, err = io.ReadFull(f, segTable[:tableLen])
+			if err != nil {
+				return song.offset, err
+			}
+			pageLen += pageHeaderLen + tableLen
+			if discard < 2 {
+				sum := 0
+				for _, v := range segTable[:tableLen] {
+					sum += int(v)
+				}
+				_, err := f.Seek(int64(sum), io.SeekCurrent)
+				if err != nil {
+					return song.offset, err
+				}
+				discard += 1
+				pageLen += sum
+				song.offset += int64(pageLen)
+				continue
+			}
+			for i := 0; i < tableLen; i++ {
+				segLen := int(segTable[i])
+				_, err = io.ReadFull(f, packetBuf[pStart:pStart+segLen])
+				if err != nil {
+					return song.offset, err
+				}
+				pageLen += segLen
+				pLen += segLen
+				if segLen == partialPacketLen {
+					pStart += partialPacketLen
+				} else {
+					// more xsalsa20_poly1305 stuff
+					binary.BigEndian.PutUint16(header[2:], seq)
+					binary.BigEndian.PutUint32(header[4:], tstamp)
+					copy(nonce[:], header[:])
+					encrypted := secretbox.Seal(
+						header[:],
+						packetBuf[:pLen],
+						&nonce,
+						&voiceGw.secretKey,
+					)
+					_, err := sock.Write(encrypted)
+					if err != nil {
+						return song.offset, err
+					}
+					seq += 1
+					tstamp += 960
+					pLen = 0
+					pStart = 0
+					pNum += 1
+					if pNum == packetBurst {
+						dt := burstDuration - time.Since(prevt)
+						dt64 := dt.Microseconds()
+						if dt64 < min {
+							min = dt64
+						}
+						if dt64 > max {
+							max = dt64
+						}
+						avg = (samps*avg + dt64)/(samps+1)
+						samps++
+						fmt.Printf(
+							"min=%6d avg=%6d max=%6d\r",
+							min, avg, max,
+						)
+						if dt > 0 {
+							time.Sleep(dt)
+						}
+						pNum = 0
+						prevt = time.Now()
+					}
+					select {
+					case song := <-voiceGw.songCtrl:
+						if song.offset == songNormalStop {
+							return songNormalStop, nil
+						}
+					case <-ctx.Done():
+						return song.offset, ctx.Err()
+					default:
+						// Do nothing
+					}
+				}
+			}
+			song.offset += int64(pageLen)
+		}
+		return songNormalStop, nil
+	}
 	for {
 		select {
-		case packet := <-voiceGw.packets:
-			if !isSpeaking {
-				// Indicate speaking
-				err = vSend(voiceGw.ws, ctx, &speakingPayload)
-				if err != nil {
-					return
-				}
-				isSpeaking = true
+		case song := <-voiceGw.songCtrl:
+			if song.offset == songNormalStop {
+				// Do nothing
+				break
 			}
-			// more xsalsa20_poly1305 stuff
-			binary.BigEndian.PutUint16(header[2:], sequence)
-			binary.BigEndian.PutUint32(header[4:], timestamp)
-			sequence += 1
-			timestamp += 960
-			copy(nonce[:], header)
-			encrypted := secretbox.Seal(
-				header,
-				packet,
-				&nonce,
-				&voiceGw.secretKey,
-			)
-			_, err := sock.Write(encrypted)
+			err := vSend(voiceGw.ws, ctx, &speakingPayload)
 			if err != nil {
-				slog.Error("udp fail", "g", voiceGw.guildId, "e", err)
-				return
+				log(err)
 			}
-			timer.Stop()
-			timer.Reset(packetRecvTimeout)
-		case <-timer.C:
-			if isSpeaking {
-				// Indicate silent
-				err = vSend(voiceGw.ws, ctx, &silentPayload)
-				if err != nil {
-					return
-				}
-				isSpeaking = false
+			offset, err := play(song)
+			if err != nil {
+				log(err)
 			}
+			err = vSend(voiceGw.ws, ctx, &silentPayload)
+			if err != nil {
+				log(err)
+			}
+			song.offset = offset
+			voiceGw.songDone <- song
 		case <-ctx.Done():
 			return
 		}

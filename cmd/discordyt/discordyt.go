@@ -9,34 +9,23 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/kausikk/discordyt/internal"
-	"github.com/kausikk/discordyt/internal/splitlog"
 )
 
-const VERSION = "v0.3.3"
+const VERSION = "v0.3.4"
 
 func main() {
 	// Read env variables
 	fmt.Println("discordyt", VERSION)
 	if len(os.Args) < 2 {
-		slog.Error(".env missing")
+		fmt.Println(".env missing")
 		os.Exit(1)
 	}
 	config, err := godotenv.Read(os.Args[1])
 	if err != nil {
-		slog.Error(".env parse fail", "e", err)
+		fmt.Println(".env parse fail", err)
 		os.Exit(1)
 	}
 
-	// Create log file. logger also redirects
-	// stderr to the currently open log file.
-	logger, err := splitlog.Open(config["LOG_FOLDER"])
-	if err != nil {
-		slog.Error("logger open fail", "e", err)
-		os.Exit(1)
-	}
-	defer logger.Close()
-	slogger := slog.New(slog.NewTextHandler(logger, nil))
-	slog.SetDefault(slogger)
 	slog.Info("discordyt", "v", VERSION)
 
 	// Prepare sig int (Ctrl + C) channel

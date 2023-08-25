@@ -29,7 +29,7 @@ const maxSongQMsg = "Too many songs in queue (max 10)"
 
 const inactiveTimeout = 5 * time.Minute
 
-type interactionRespType int64
+type interactionRespType int
 
 const (
 	pong interactionRespType = iota + 1
@@ -165,8 +165,8 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 					data.Id, data.Token, "Stopped",
 					channelMessageWithSource,
 				)
-				gw.StopAudio(ctx, guildId)
-				gw.JoinChannel(ctx, guildId, internal.NullChannelId)
+				gw.StopAudio(guildId)
+				gw.ChangeChannel(ctx, guildId, internal.NullChannelId)
 				// Respond to interaction for songs
 				// that have not yet been found
 				for head := q.head(); head != nil; head = q.head() {
@@ -209,7 +209,7 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 					break
 				}
 				// Try to join channel
-				err := gw.JoinChannel(ctx, guildId, head.chnlId)
+				err := gw.ChangeChannel(ctx, guildId, head.chnlId)
 				if err != nil {
 					slog.Error(
 						"join fail",
@@ -263,7 +263,7 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 					break
 				}
 				// Try to join channel
-				err := gw.JoinChannel(ctx, guildId, head.chnlId)
+				err := gw.ChangeChannel(ctx, guildId, head.chnlId)
 				if err != nil {
 					slog.Error(
 						"join fail",
@@ -289,7 +289,7 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 			startInactiveTimer = false
 			// No cmds or downloads were recently complete,
 			// so leave the voice channnel
-			err := gw.JoinChannel(ctx, guildId, internal.NullChannelId)
+			err := gw.ChangeChannel(ctx, guildId, internal.NullChannelId)
 			if err != nil {
 				slog.Error(
 					"join fail",

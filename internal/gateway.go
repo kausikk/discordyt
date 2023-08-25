@@ -1,13 +1,10 @@
 package internal
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
-	"os"
 	"sync"
 	"time"
 
@@ -15,10 +12,13 @@ import (
 )
 
 const discordWSS = "wss://gateway.discord.gg"
+
 const defaultTimeout = 2 * time.Minute
 const connectVoiceTimeout = 10 * time.Second
-const joinChannelTimeout = 10 * time.Second
-const packetSendTimeout = 5 * time.Second
+const changeChannelTimeout = 10 * time.Second
+const songSendTimeout = 5 * time.Second
+
+const songNormalStop = -1
 
 const NullChannelId = ""
 
@@ -32,32 +32,6 @@ var gatewayProperties = identifyProperties{
 	Browser: "disco",
 	Device:  "lenovo thinkcentre",
 }
-
-const pageHeaderLen = 27
-const maxSegTableLen = 255
-const nonceLen = 24
-const rtpHeaderLen = 12
-
-// https://datatracker.ietf.org/doc/html/rfc3533#section-6
-var magicStr = []byte("OggS")
-
-// A packet is composed of at least one segment.
-// A packet is terminated by a segment of length < 255.
-// A segment of length = 255 indicates that a packet has only
-// been partially read, and must be completed by appending
-// the upcoming segments.
-const partialPacketLen = 255
-
-// 20 ms packet of 128 kbps opus audio is approximately
-// 128000/8 * 20/1000 = 320 bytes. Apply a safety factor.
-const maxPacketLen = 1024
-
-// Number of packets to send consecutively without waiting
-const packetBurst = 10
-
-// Technically this should be 20 ms, but made it slightly
-// shorter for better audio continuity
-const packetDuration = 19800 * time.Microsecond
 
 type gwState int8
 
@@ -79,10 +53,10 @@ type Gateway struct {
 	guildStates     map[string]*guildState
 	cmd             chan InteractionData
 	ws              *websocket.Conn
-	lastSeq         int64
+	lastSeq         int
 	resumeUrl       string
 	sessionId       string
-	heartbeatIntv   int64
+	heartbeatIntv   int
 }
 
 type guildState struct {
@@ -94,11 +68,16 @@ type guildState struct {
 	freshTokEnd   bool
 	freshChnlSess bool
 	voiceGw       *voiceGateway
-	packets       chan []byte
-	joinLock      chan bool
-	playLock      chan bool
+	songCtrl      chan songFile
+	songDone      chan songFile
 	joinedChnl    chan string
-	isPlaying     bool
+	joinLock      sync.Mutex
+	playLock      sync.Mutex
+}
+
+type songFile struct {
+	path   string
+	offset int64
 }
 
 func Connect(rootctx context.Context, botToken, botAppId, botPublicKey, songFolder string) (*Gateway, error) {
@@ -291,7 +270,7 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 	}
 }
 
-func (gw *Gateway) JoinChannel(rootctx context.Context, guildId string, channelId string) error {
+func (gw *Gateway) ChangeChannel(rootctx context.Context, guildId string, channelId string) error {
 	// Check if bot is already in channel
 	// or if attempting to leave channel
 	// when it never joined
@@ -302,31 +281,20 @@ func (gw *Gateway) JoinChannel(rootctx context.Context, guildId string, channelI
 		gw.guildStatesLock.Unlock()
 		return nil
 	}
-
 	// Init guild state if doesn't exist
 	if !ok {
 		guild = &guildState{}
 		guild.guildId = guildId
-		guild.packets = make(chan []byte)
-		guild.joinLock = make(chan bool, 1)
-		guild.joinLock <- true
-		guild.playLock = make(chan bool, 1)
-		guild.playLock <- true
+		guild.songCtrl = make(chan songFile)
+		guild.songDone = make(chan songFile)
 		guild.joinedChnl = make(chan string)
 		gw.guildStates[guildId] = guild
 	}
 	gw.guildStatesLock.Unlock()
-
-	// Lock guild to prevent JoinChannel()
+	// Lock guild to prevent ChangeChannel()
 	// from executing in another thread
-	select {
-	case <-guild.joinLock:
-		// Obtained lock
-	case <-rootctx.Done():
-		return errors.New("could not lock")
-	}
-	defer func() { guild.joinLock <- true }()
-
+	guild.joinLock.Lock()
+	defer guild.joinLock.Unlock()
 	// Send a voice state update
 	payload := gatewaySend{Op: voiceStateUpdate}
 	data := voiceStateUpdateData{
@@ -340,147 +308,77 @@ func (gw *Gateway) JoinChannel(rootctx context.Context, guildId string, channelI
 	if err != nil {
 		return err
 	}
-
 	// Wait for channel join, context cancel, or timeout
-	timer := time.NewTimer(joinChannelTimeout)
+	timer := time.NewTimer(changeChannelTimeout)
 	defer timer.Stop()
 	select {
 	case joinedId := <-guild.joinedChnl:
 		if joinedId != channelId {
-			return errors.New("unable to join channel")
+			return errors.New("gw not in channel")
 		}
 	case <-timer.C:
-		return errors.New("channel join timeout")
+		return errors.New("gw join timeout")
 	case <-rootctx.Done():
 		return rootctx.Err()
 	}
-
 	return nil
 }
 
-func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, song string) error {
+func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, songPath string) error {
 	// Get guild state
 	guild, ok := getGuildState(gw, guildId)
 	if !ok {
-		return errors.New("bot not in guild")
+		return errors.New("gw not in guild")
 	}
-
 	// Lock guild to prevent PlayAudio()
 	// from executing in another thread
-	select {
-	case <-guild.playLock:
-		// Obtained lock
-	case <-rootctx.Done():
-		return errors.New("could not lock")
+	guild.playLock.Lock()
+	defer guild.playLock.Unlock()
+	// Check if bot is in channel
+	if guild.botChnlId == NullChannelId {
+		return errors.New("gw not in channel")
 	}
-	defer func() {
-		guild.isPlaying = false
-		guild.playLock <- true
-	}()
-	guild.isPlaying = true
-
-	// Check if voice is connected
-	if guild.voiceGw == nil {
-		return errors.New("voice gateway not connected")
-	} else if guild.voiceGw.state != vGwReady {
-		return errors.New("voice gateway not connected")
-	}
-
-	// Open song
-	f, err := os.Open(song)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	// Create timer to timeout voice packet sends
-	timer := time.NewTimer(packetSendTimeout)
+	// Init timer and stop immediately
+	timer := time.NewTimer(songSendTimeout)
 	defer timer.Stop()
-	// Stop it immediately
 	timer.Stop()
-
-	// https://datatracker.ietf.org/doc/html/rfc3533#section-6
-	headerBuf := [pageHeaderLen]byte{}
-	segTable := [maxSegTableLen]byte{}
-	packetBuf := [maxPacketLen]byte{}
-	pLen := 0
-	pNum := 0
-	pStart := 0
-	discard := 0
-	for guild.isPlaying {
-		n, err := io.ReadFull(f, headerBuf[:])
-		if err == io.EOF || n < pageHeaderLen {
-			break
+	// Send path to voice gw
+	// and wait for finish
+	song := songFile{songPath, 0}
+	for {
+		select {
+		case guild.songCtrl <- song:
+		case <-timer.C:
+			return errors.New("gw play timeout")
+		case <-rootctx.Done():
+			return rootctx.Err()
 		}
-		if !bytes.Equal(magicStr, headerBuf[:4]) {
-			break
+		timer.Stop()
+		select {
+		case song = <-guild.songDone:
+			// -1 indicates song was stopped
+			// or finished playing
+			if song.offset == songNormalStop {
+				return nil
+			}
+		case <-rootctx.Done():
+			return rootctx.Err()
 		}
-		tableLen := int(headerBuf[26])
-		_, err = io.ReadFull(f, segTable[:tableLen])
-		if err != nil {
-			return err
-		}
-		if discard < 2 {
-			var sum int64
-			for _, v := range segTable[:tableLen] {
-				sum += int64(v)
-			}
-			_, err := f.Seek(sum, io.SeekCurrent)
-			if err != nil {
-				return err
-			}
-			discard += 1
-			continue
-		}
-		for i := 0; i < tableLen; i++ {
-			segLen := int(segTable[i])
-			_, err = io.ReadFull(f, packetBuf[pStart:pStart+segLen])
-			if err != nil {
-				return err
-			}
-			pLen += segLen
-			if segLen == partialPacketLen {
-				pStart += partialPacketLen
-			} else {
-				packet := make([]byte, pLen)
-				copy(packet, packetBuf[:pLen])
-				pLen = 0
-				pStart = 0
-				pNum += 1
-				timer.Reset(packetSendTimeout)
-				select {
-				case guild.packets <- packet:
-					// Successfully sent packet to voice gw
-				case <-timer.C:
-					return errors.New("packet send timeout")
-				case <-rootctx.Done():
-					return rootctx.Err()
-				}
-				timer.Stop()
-				if pNum == packetBurst {
-					time.Sleep(packetDuration * packetBurst)
-					pNum = 0
-				}
-			}
-			// Break if StopAudio sets isPlaying to false
-			if !guild.isPlaying {
-				break
-			}
-		}
+		timer.Reset(songSendTimeout)
 	}
-	return nil
 }
 
-func (gw *Gateway) StopAudio(rootctx context.Context, guildId string) error {
+func (gw *Gateway) StopAudio(guildId string) error {
 	// Get guild state
 	guild, ok := getGuildState(gw, guildId)
 	if !ok {
-		return errors.New("bot not in guild")
+		return errors.New("gw not in guild")
 	}
-
-	// Stop PlayAudio loop
-	guild.isPlaying = false
-
+	// Check if bot is in channel
+	if guild.botChnlId == NullChannelId {
+		return errors.New("gw not in channel")
+	}
+	guild.songCtrl <- songFile{"stop", songNormalStop}
 	return nil
 }
 
@@ -605,7 +503,8 @@ func startVoiceGw(guild *guildState, botAppId string, ctx context.Context) {
 		// Create voice gateway
 		voiceGw, err := voiceConnect(
 			connCtx,
-			guild.packets,
+			guild.songCtrl,
+			guild.songDone,
 			botAppId,
 			guild.guildId,
 			guild.voiceSessId,
@@ -613,7 +512,7 @@ func startVoiceGw(guild *guildState, botAppId string, ctx context.Context) {
 			guild.voiceEndpoint,
 		)
 
-		// Send signal to JoinChannel
+		// Send signal to ChangeChannel
 		if err != nil {
 			notifyJoin(guild, NullChannelId)
 			return
@@ -628,7 +527,7 @@ func startVoiceGw(guild *guildState, botAppId string, ctx context.Context) {
 
 func notifyJoin(guild *guildState, channelId string) {
 	// Do a non-blocking write to the Guild notification
-	// channel for any listening JoinChannel coroutines
+	// channel for any listening ChangeChannel coroutines
 	select {
 	case guild.joinedChnl <- channelId:
 		// Do nothing

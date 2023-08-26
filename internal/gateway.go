@@ -61,7 +61,7 @@ type Gateway struct {
 
 type guildState struct {
 	guildId       string
-	botChnlId     string
+	chnlId     string
 	voiceSessId   string
 	voiceToken    string
 	voiceEndpoint string
@@ -276,7 +276,7 @@ func (gw *Gateway) ChangeChannel(rootctx context.Context, guildId string, channe
 	// when it never joined
 	gw.guildStatesLock.Lock()
 	guild, ok := gw.guildStates[guildId]
-	if (ok && guild.botChnlId == channelId) ||
+	if (ok && guild.chnlId == channelId) ||
 		(!ok && channelId == NullChannelId) {
 		gw.guildStatesLock.Unlock()
 		return nil
@@ -335,7 +335,7 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, songPath string) 
 	guild.playLock.Lock()
 	defer guild.playLock.Unlock()
 	// Check if bot is in channel
-	if guild.botChnlId == NullChannelId {
+	if guild.chnlId == NullChannelId {
 		return errors.New("gw not in channel")
 	}
 	// Init timer and stop immediately
@@ -375,7 +375,7 @@ func (gw *Gateway) StopAudio(guildId string) error {
 		return errors.New("gw not in guild")
 	}
 	// Check if bot is in channel
-	if guild.botChnlId == NullChannelId {
+	if guild.chnlId == NullChannelId {
 		return errors.New("gw not in channel")
 	}
 	guild.songCtrl <- songFile{"stop", songNormalStop}
@@ -421,11 +421,11 @@ func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) erro
 			return nil
 		}
 		// Store data in guild state
-		guild.botChnlId = voiceData.ChannelId
+		guild.chnlId = voiceData.ChannelId
 		guild.voiceSessId = voiceData.SessionId
 		guild.freshChnlSess = true
 		// If chnl id is "", make sure voice gw is closed
-		if guild.botChnlId == NullChannelId {
+		if guild.chnlId == NullChannelId {
 			if guild.voiceGw != nil {
 				guild.voiceGw.Close()
 			}
@@ -449,7 +449,7 @@ func handleDispatch(gw *Gateway, ctx context.Context, payload *gatewayRead) erro
 		guild.voiceToken = serverData.Token
 		guild.freshTokEnd = true
 		// Join voice gateway with new session and non-null channel
-		if guild.freshChnlSess && guild.botChnlId != NullChannelId {
+		if guild.freshChnlSess && guild.chnlId != NullChannelId {
 			startVoiceGw(guild, gw.botAppId, ctx)
 		}
 	case "INTERACTION_CREATE":
@@ -518,7 +518,7 @@ func startVoiceGw(guild *guildState, botAppId string, ctx context.Context) {
 			return
 		}
 		guild.voiceGw = voiceGw
-		notifyJoin(guild, guild.botChnlId)
+		notifyJoin(guild, guild.chnlId)
 
 		// Start listening
 		guild.voiceGw.Serve(ctx)

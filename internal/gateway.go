@@ -158,7 +158,7 @@ func (gw *Gateway) Reconnect(rootctx context.Context) error {
 	}()
 
 	// Receive HELLO event
-	if err = read(gw.ws, rootctx, &readPayload); err != nil {
+	if err = read(rootctx, gw.ws, &readPayload); err != nil {
 		return err
 	}
 	helloData := helloData{}
@@ -175,12 +175,12 @@ func (gw *Gateway) Reconnect(rootctx context.Context) error {
 	}
 	sendPayload.Op = identify
 	sendPayload.D, _ = json.Marshal(&idData)
-	if err = send(gw.ws, rootctx, &sendPayload); err != nil {
+	if err = send(rootctx, gw.ws, &sendPayload); err != nil {
 		return err
 	}
 
 	// Receive READY or INVALID_SESSION event
-	if err = read(gw.ws, rootctx, &readPayload); err != nil {
+	if err = read(rootctx, gw.ws, &readPayload); err != nil {
 		return err
 	}
 	if readPayload.Op == invalidSession {
@@ -219,7 +219,7 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 		// Enter read loop
 		isReading := true
 		for isReading {
-			if err = read(gw.ws, rootctx, &readPayload); err != nil {
+			if err = read(rootctx, gw.ws, &readPayload); err != nil {
 				slog.Error("gw read fail", "e", err)
 				isReading = false
 				break
@@ -234,7 +234,7 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 				// Send heartbeat
 				sendPayload.Op = heartbeat
 				sendPayload.D, _ = json.Marshal(gw.lastSeq)
-				err = send(gw.ws, rootctx, &sendPayload)
+				err = send(rootctx, gw.ws, &sendPayload)
 				if err != nil {
 					isReading = false
 				}
@@ -288,7 +288,7 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 		gw.ws = newWs
 
 		// Receive HELLO event
-		if err = read(gw.ws, rootctx, &readPayload); err != nil {
+		if err = read(rootctx, gw.ws, &readPayload); err != nil {
 			return err
 		}
 		helloData := helloData{}
@@ -305,7 +305,7 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 		}
 		sendPayload.Op = resume
 		sendPayload.D, _ = json.Marshal(&resumeData)
-		if err = send(gw.ws, rootctx, &sendPayload); err != nil {
+		if err = send(rootctx, gw.ws, &sendPayload); err != nil {
 			return err
 		}
 
@@ -352,7 +352,7 @@ func (gw *Gateway) ChangeChannel(rootctx context.Context, guildId string, channe
 		data.ChannelId = &channelId
 	}
 	payload.D, _ = json.Marshal(&data)
-	err := send(gw.ws, rootctx, &payload)
+	err := send(rootctx, gw.ws, &payload)
 	if err != nil {
 		return err
 	}
@@ -681,7 +681,7 @@ func gwHeartbeat(ctx context.Context, gw *Gateway) error {
 	defer timer.Stop()
 	for {
 		heartbeat.D, _ = json.Marshal(gw.lastSeq)
-		if err := send(gw.ws, ctx, &heartbeat); err != nil {
+		if err := send(ctx, gw.ws, &heartbeat); err != nil {
 			return err
 		}
 		select {
@@ -693,7 +693,7 @@ func gwHeartbeat(ctx context.Context, gw *Gateway) error {
 	}
 }
 
-func read(c *websocket.Conn, ctx context.Context, payload *gatewayRead) error {
+func read(ctx context.Context, c *websocket.Conn, payload *gatewayRead) error {
 	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
 	defer cancel()
 	_, raw, err := c.Read(ctx)
@@ -714,7 +714,7 @@ func read(c *websocket.Conn, ctx context.Context, payload *gatewayRead) error {
 	return err
 }
 
-func send(c *websocket.Conn, ctx context.Context, payload *gatewaySend) error {
+func send(ctx context.Context, c *websocket.Conn, payload *gatewaySend) error {
 	encoded, _ := json.Marshal(payload)
 	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
 	defer cancel()

@@ -13,7 +13,7 @@ Done:
 - put context as first argument in functions -> done
 - need to do profiling, maybe move play into voice gateway to avoid allocations -> done
 - change int64 to int -> done
-- better logging (split across files, use slog, log exceptions?) -> done
+- better logging (use slog, log exceptions?) -> done.
 - add runtime to "Playing song" response -> done
 - Use UDP socket thread to monitor silence and leave channel -> done, but leave channel is handled outside of socket thread
 - change guild state to store channel id as string instead of *string -> done
@@ -35,6 +35,7 @@ Done:
 - better play command in general -> done
 
 Ideas:
+- split logging across multiple files
 - do binary search in find() or add index to uuid
 - Connect and Listen should be combined (Launch) -> No
 - send channel leave when startVoiceGw fails? -> should test this

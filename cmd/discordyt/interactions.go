@@ -24,8 +24,8 @@ const youtubeApi = "https://www.googleapis.com/youtube/v3/search?part=snippet&ma
 
 const ytdlpFormat = "ba[acodec=opus][asr=48K][ext=webm][audio_channels=2]"
 
-const maxSongQLen = 10
-const maxSongQMsg = "Too many songs in queue (max 10)"
+const maxSongQLen = 50
+const maxSongQMsg = "Too many songs in queue (max 50)"
 
 const inactiveTimeout = 5 * time.Minute
 

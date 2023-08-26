@@ -233,6 +233,7 @@ type voiceGwPayload struct {
 	Op voiceopcode     `json:"op"`
 	D  json.RawMessage `json:"d"`
 }
+
 var cachedHeartbeat = voiceGwPayload{
 	Op: voiceHeartbeat,
 	// Voice nonce = 123403290
@@ -260,6 +261,7 @@ type voiceSelectPrtclData struct {
 	Protocol string                  `json:"protocol"`
 	Data     voiceSelectPrtclSubData `json:"data"`
 }
+
 var cachedSelectPrtcl = voiceGwPayload{
 	Op: voiceSelectPrtcl,
 	D:  cachedSelectPrtclData,

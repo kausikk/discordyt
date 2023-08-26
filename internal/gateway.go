@@ -1,21 +1,21 @@
 package internal
 
 import (
-	"context"
-	"encoding/json"
-	"encoding/binary"
 	"bytes"
+	"context"
+	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
-	"sync"
-	"time"
 	"net"
 	"os"
-	"io"
+	"sync"
+	"time"
 
-	"nhooyr.io/websocket"
 	"golang.org/x/crypto/nacl/secretbox"
+	"nhooyr.io/websocket"
 )
 
 const discordWSS = "wss://gateway.discord.gg"
@@ -393,9 +393,6 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, songPath string) 
 	// Start playing
 	guild.isPlaying = true
 	defer func() {
-		// Print newline to preserve min, avg,
-		// and max printouts
-		fmt.Print("\n")
 		guild.isPlaying = false
 	}()
 
@@ -424,6 +421,9 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, songPath string) 
 	prevt := time.Now()
 	var min int64 = prevt.Unix()
 	var max, avg, samps int64
+	defer func() {
+		slog.Info("play stats", "min", min, "avg", avg, "max", max)
+	}()
 
 	// Parse Opus pages
 	for guild.isPlaying {
@@ -467,7 +467,7 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, songPath string) 
 			if segLen == partialPacketLen {
 				pStart += partialPacketLen
 			} else {
-				// Copy packet to new buffer 
+				// Copy packet to new buffer
 				// and send to vUdp
 				packet := make([]byte, pLen)
 				copy(packet, packetBuf[:pLen])
@@ -502,12 +502,8 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, songPath string) 
 					if dt64 > max {
 						max = dt64
 					}
-					avg = (samps*avg + dt64)/(samps+1)
+					avg = (samps*avg + dt64) / (samps + 1)
 					samps++
-					fmt.Printf(
-						"min=%6d avg=%6d max=%6d\r",
-						min, avg, max,
-					)
 					prevt = time.Now()
 					pNum = 0
 				}
@@ -563,20 +559,24 @@ func handleDispatch(ctx context.Context, gw *Gateway, payload *gatewayRead) erro
 		gw.userOccupancy[voiceData.GuildId+voiceData.UserId] =
 			voiceData.ChannelId
 		gw.userOccLock.Unlock()
+
 		// Return if not related to bot
 		if voiceData.UserId != gw.botAppId {
 			return nil
 		}
+
 		// I think guild state should always be init'd by the time
 		// this event is received, so ignore event if not init'd
 		guild, ok := getGuildState(gw, voiceData.GuildId)
 		if !ok {
 			return nil
 		}
+
 		// Store data in guild state
 		guild.chnlId = voiceData.ChannelId
 		guild.vSessId = voiceData.SessionId
 		guild.freshChnlSess = true
+
 		// If chnl id is "", make sure voice gw is closed
 		if guild.chnlId == NullChannelId {
 			vClose(guild)
@@ -589,16 +589,19 @@ func handleDispatch(ctx context.Context, gw *Gateway, payload *gatewayRead) erro
 		// Get new voice server token and endpoint
 		serverData := voiceServerUpdateData{}
 		json.Unmarshal(payload.D, &serverData)
+
 		// I think guild state should always be init'd by the time
 		// this event is received, so ignore event if not init'd
 		guild, ok := getGuildState(gw, serverData.GuildId)
 		if !ok {
 			return nil
 		}
+
 		// Store data in guild state
 		guild.vEndpoint = "wss://" + serverData.Endpoint + "?v=4"
 		guild.vToken = serverData.Token
 		guild.freshTokEnd = true
+
 		// Join voice gateway with new session and non-null channel
 		if guild.freshChnlSess && guild.chnlId != NullChannelId {
 			startVoiceGw(ctx, guild)
@@ -974,7 +977,7 @@ func vUdp(ctx context.Context, guild *guildState) error {
 				// Indicate speaking
 				err = vSend(ctx, guild.vWs, &speakingPayload)
 				if err != nil {
-					guild.vPackAck<-false
+					guild.vPackAck <- false
 					return err
 				}
 				isSpeaking = true
@@ -993,10 +996,10 @@ func vUdp(ctx context.Context, guild *guildState) error {
 			)
 			_, err := sock.Write(encrypted)
 			if err != nil {
-				guild.vPackAck<-false
+				guild.vPackAck <- false
 				return err
 			}
-			guild.vPackAck<-true
+			guild.vPackAck <- true
 			timer.Stop()
 			timer.Reset(silenceTimeout)
 		case <-timer.C:

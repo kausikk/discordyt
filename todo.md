@@ -1,6 +1,5 @@
 ## Notes
 TODO:
-- do binary search in find()
 - unhandlded json encode/decodes
 - rename *_consts.go files
 - add state handling to the start of Gateway methods
@@ -9,10 +8,10 @@ TODO:
 - proper error definitions (replace error.New)
 - gateway properties should be from environment
 - add skip command
-- put context as first argument in functions
 
 Done:
-- need to do profiling, maybe move play into voice gateway to avoid allocations -> done. didnt profile build before moving play into voice, so not sure if it had any impact
+- put context as first argument in functions -> done
+- need to do profiling, maybe move play into voice gateway to avoid allocations -> done
 - change int64 to int -> done
 - better logging (split across files, use slog, log exceptions?) -> done
 - add runtime to "Playing song" response -> done
@@ -36,5 +35,6 @@ Done:
 - better play command in general -> done
 
 Ideas:
+- do binary search in find() or add index to uuid
 - Connect and Listen should be combined (Launch) -> No
-- send channel leave when startVoiceGw fails? -> should test/do this
+- send channel leave when startVoiceGw fails? -> should test this

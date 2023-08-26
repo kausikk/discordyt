@@ -6,12 +6,16 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/kausikk/discordyt/internal"
+	"github.com/virtuald/go-paniclog"
 )
 
-const VERSION = "v0.3.4"
+const VERSION = "v0.3.4-playtest"
+
+const dateFmt = "2006-01-02T15:04:05"
 
 func main() {
 	// Read env variables
@@ -25,6 +29,24 @@ func main() {
 		fmt.Println(".env parse fail", err)
 		os.Exit(1)
 	}
+
+	// Open log file
+	f, err := os.Create(
+		config["LOG_FOLDER"] + "/discordyt-" +
+			time.Now().Format(dateFmt) + ".log",
+	)
+	if err != nil {
+		fmt.Println("log open fail", err)
+		os.Exit(1)
+	}
+
+	// Redirect stderr to log file
+	_, err = paniclog.RedirectStderr(f)
+	if err != nil {
+		fmt.Println("log redirect fail", err)
+		os.Exit(1)
+	}
+	f.Close()
 
 	slog.Info("discordyt", "v", VERSION)
 

@@ -15,7 +15,7 @@ import (
 
 const VERSION = "v0.3.4-playtest"
 
-const dateFmt = "2006-01-02T15:04:05"
+const dateFmt = "2006-01-02T15-04-05"
 
 func main() {
 	// Read env variables

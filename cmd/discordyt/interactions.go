@@ -92,7 +92,6 @@ type findResult struct {
 }
 
 func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan internal.InteractionData, guildId, botAppId, ytApiKey, songFolder string) {
-	// Init song queue
 	q := &songQueue{}
 	doneFind := make(chan findResult, maxSongQLen)
 	donePlay := make(chan songid, maxSongQLen)
@@ -108,10 +107,9 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 		donePlay <- id
 	}
 
-	// Create timer to timeout during inactivity
+	// Create inactive timer and stop immediately
 	timer := time.NewTimer(inactiveTimeout)
 	defer timer.Stop()
-	// Stop it immediately
 	timer.Stop()
 
 	// Start handle loop
@@ -121,7 +119,6 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 		case data := <-cmd:
 			switch data.Data.Name {
 			case "play":
-				// Check if user is in a channel
 				if data.ChnlId == "" {
 					postResp(
 						data.Id, data.Token,
@@ -130,7 +127,6 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 					)
 					break
 				}
-				// Add song to queue
 				id, ok := q.push(songQueueItem{
 					token: data.Token, chnlId: data.ChnlId,
 				})
@@ -142,7 +138,6 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 					)
 					break
 				}
-				// Start finding song
 				slog.Info(
 					"find start",
 					"q", data.Data.Options[0].Value,
@@ -159,7 +154,6 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 					id, doneFind,
 				)
 			case "stop":
-				// Stop current audio and leave channel
 				slog.Info("stopping", "g", guildId)
 				postResp(
 					data.Id, data.Token, "Stopped",
@@ -233,7 +227,6 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 				)
 				go play(head.path, head.id)
 			} else {
-				// Tell user that it's added to queue
 				slog.Info("queued", "p", song.path)
 				patchResp(
 					botAppId, song.token,
@@ -346,7 +339,6 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 		return
 	}
 
-	// Extract song data from top result
 	if len(results.Items) < 1 {
 		slog.Error("find no results", "q", query)
 		done <- findResult{
@@ -358,12 +350,9 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 		results.Items[0].Snippet.Title)
 	songId := results.Items[0].Id.VideoId
 
-	// Check if file already exists
-	// Otherwise download it
 	songPath, dur, ok := search(songFolder, songId, "opus")
 	if !ok {
 		err := func() error {
-			// Download from youtube with yt-dlp
 			cmd := exec.Command(
 				"conda",
 				"run",
@@ -382,7 +371,6 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 				return err
 			}
 
-			// Check if webm was created
 			webmPath, dur, ok := search(songFolder, songId, "webm")
 			if !ok {
 				slog.Error("find no webm")
@@ -410,7 +398,6 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 				)
 			}
 
-			// Convert to opus file
 			opusPath := songFolder + "/" + songId + "-" + dur + ".opus"
 			cmd = exec.Command(
 				"ffmpeg",
@@ -436,7 +423,6 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 			return nil
 		}()
 
-		// Check that file exists
 		songPath, dur, ok = search(songFolder, songId, "opus")
 		if err != nil || !ok {
 			slog.Error("find no opus", "e", err)

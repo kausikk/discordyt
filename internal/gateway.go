@@ -157,17 +157,14 @@ func (gw *Gateway) Reconnect(rootctx context.Context) error {
 		}
 	}()
 
-	// Receive HELLO event
 	if err = read(rootctx, gw.ws, &readPayload); err != nil {
 		return err
 	}
 	helloData := helloData{}
 	json.Unmarshal(readPayload.D, &helloData)
 
-	// Store hb interval
 	gw.heartbeatIntv = helloData.Interval
 
-	// Send IDENTIFY event
 	idData := identifyData{
 		Token:      gw.botToken,
 		Intents:    gatewayIntents,
@@ -179,7 +176,6 @@ func (gw *Gateway) Reconnect(rootctx context.Context) error {
 		return err
 	}
 
-	// Receive READY or INVALID_SESSION event
 	if err = read(rootctx, gw.ws, &readPayload); err != nil {
 		return err
 	}
@@ -189,12 +185,10 @@ func (gw *Gateway) Reconnect(rootctx context.Context) error {
 	readyData := readyData{}
 	json.Unmarshal(readPayload.D, &readyData)
 
-	// Store session resume data
 	gw.sessionId = readyData.SessionId
 	gw.resumeUrl = readyData.ResumeUrl
 	gw.lastSeq = readPayload.S
 
-	// Change to READY state
 	gw.state = gwReady
 	return nil
 }
@@ -225,13 +219,10 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 				break
 			}
 
-			// Store sequence number
 			gw.lastSeq = readPayload.S
 
-			// Handle event according to opcode
 			switch readPayload.Op {
 			case heartbeat:
-				// Send heartbeat
 				sendPayload.Op = heartbeat
 				sendPayload.D, _ = json.Marshal(gw.lastSeq)
 				err = send(rootctx, gw.ws, &sendPayload)
@@ -247,7 +238,6 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 				// Errors on next read or send
 				gw.ws.Close(statusGatewayInvalidSession, "")
 			case dispatch:
-				// Handle dispatch
 				err = handleDispatch(rootctx, gw, &readPayload)
 				if err != nil {
 					isReading = false
@@ -255,8 +245,6 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 			}
 		}
 
-		// Change to Resuming state
-		// Cancel heartbeat
 		gw.state = gwResuming
 		hbCancel()
 
@@ -274,10 +262,8 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 			return err
 		}
 
-		// Close websocket
 		gw.ws.Close(websocket.StatusServiceRestart, "")
 
-		// Connect to resume url
 		dialCtx, dialCancel := context.WithTimeout(
 			rootctx, defaultTimeout)
 		newWs, _, err := websocket.Dial(dialCtx, gw.resumeUrl, nil)
@@ -287,17 +273,14 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 		}
 		gw.ws = newWs
 
-		// Receive HELLO event
 		if err = read(rootctx, gw.ws, &readPayload); err != nil {
 			return err
 		}
 		helloData := helloData{}
 		json.Unmarshal(readPayload.D, &helloData)
 
-		// Store hb interval
 		gw.heartbeatIntv = helloData.Interval
 
-		// Send RESUME event
 		resumeData := resumeData{
 			Token:     gw.botToken,
 			SessionId: gw.sessionId,
@@ -309,7 +292,6 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 			return err
 		}
 
-		// Change to READY state
 		gw.state = gwReady
 	}
 }
@@ -390,20 +372,18 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, songPath string) 
 		return errors.New("gw not in channel")
 	}
 
-	// Start playing
 	guild.isPlaying = true
 	defer func() {
 		guild.isPlaying = false
 	}()
 
-	// Open song
 	f, err := os.Open(songPath)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	// Init timer and stop it immediately
+	// Create timer and stop it immediately
 	timer := time.NewTimer(packetSendTimeout)
 	defer timer.Stop()
 	timer.Stop()
@@ -417,7 +397,6 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, songPath string) 
 	pStart := 0
 	discard := 0
 
-	// Init packet period tracking vars
 	prevt := time.Now()
 	var min int64 = prevt.Unix()
 	var max, avg, samps int64
@@ -509,7 +488,6 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, songPath string) 
 				}
 			}
 
-			// Break if StopAudio sets isPlaying to false
 			if !guild.isPlaying {
 				break
 			}
@@ -519,13 +497,11 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, songPath string) 
 }
 
 func (gw *Gateway) StopAudio(guildId string) error {
-	// Get guild state
 	guild, ok := getGuildState(gw, guildId)
 	if !ok {
 		return errors.New("gw not in guild")
 	}
 
-	// Check if bot is in channel
 	if guild.chnlId == NullChannelId {
 		return errors.New("gw not in channel")
 	}
@@ -552,7 +528,6 @@ func (gw *Gateway) Close() {
 func handleDispatch(ctx context.Context, gw *Gateway, payload *gatewayRead) error {
 	switch payload.T {
 	case "VOICE_STATE_UPDATE":
-		// Get channel, user, and guild
 		voiceData := voiceStateData{}
 		json.Unmarshal(payload.D, &voiceData)
 		gw.userOccLock.Lock()
@@ -572,7 +547,6 @@ func handleDispatch(ctx context.Context, gw *Gateway, payload *gatewayRead) erro
 			return nil
 		}
 
-		// Store data in guild state
 		guild.chnlId = voiceData.ChannelId
 		guild.vSessId = voiceData.SessionId
 		guild.freshChnlSess = true
@@ -581,12 +555,11 @@ func handleDispatch(ctx context.Context, gw *Gateway, payload *gatewayRead) erro
 		if guild.chnlId == NullChannelId {
 			vClose(guild)
 			notifyJoin(guild, NullChannelId)
-			// Join voice gateway with new server data
+		// Join voice gateway with new server endpoint and token
 		} else if guild.freshTokEnd {
 			startVoiceGw(ctx, guild)
 		}
 	case "VOICE_SERVER_UPDATE":
-		// Get new voice server token and endpoint
 		serverData := voiceServerUpdateData{}
 		json.Unmarshal(payload.D, &serverData)
 
@@ -597,7 +570,6 @@ func handleDispatch(ctx context.Context, gw *Gateway, payload *gatewayRead) erro
 			return nil
 		}
 
-		// Store data in guild state
 		guild.vEndpoint = "wss://" + serverData.Endpoint + "?v=4"
 		guild.vToken = serverData.Token
 		guild.freshTokEnd = true
@@ -653,7 +625,6 @@ func startVoiceGw(ctx context.Context, guild *guildState) {
 			ctx, connectVoiceTimeout)
 		defer connCancel()
 
-		// Create voice gateway
 		err := vConnect(connCtx, guild)
 		if err != nil {
 			notifyJoin(guild, NullChannelId)
@@ -706,7 +677,7 @@ func read(ctx context.Context, c *websocket.Conn, payload *gatewayRead) error {
 	// Reset T and D fields since these are optional
 	payload.T = ""
 	payload.D = nil
-	json.Unmarshal(raw, payload) // Unhandled err
+	json.Unmarshal(raw, payload)
 	if payload.Op != heartbeatAck {
 		slog.Debug(
 			"gw read",
@@ -732,7 +703,6 @@ func vConnect(ctx context.Context, guild *guildState) error {
 	var err error
 	payload := voiceGwPayload{}
 
-	// Connect to Discord websocket
 	dialCtx, dialCancel := context.WithTimeout(ctx, defaultTimeout)
 	guild.vWs, _, err = websocket.Dial(dialCtx, guild.vEndpoint, nil)
 	dialCancel()
@@ -745,17 +715,14 @@ func vConnect(ctx context.Context, guild *guildState) error {
 		}
 	}()
 
-	// Receive HELLO event
 	if err = vRead(ctx, guild.vWs, &payload); err != nil {
 		return err
 	}
 	helloData := voiceHelloData{}
 	json.Unmarshal(payload.D, &helloData)
 
-	// Store hb interval
 	guild.vHeartbeatIntv = int(helloData.Interval)
 
-	// Send IDENTIFY event
 	idData := voiceIdentifyData{
 		ServerId:  guild.guildId,
 		UserId:    guild.botAppId,
@@ -768,26 +735,24 @@ func vConnect(ctx context.Context, guild *guildState) error {
 		return err
 	}
 
-	// Receive READY event
 	if err = vRead(ctx, guild.vWs, &payload); err != nil {
 		return err
 	}
 	readyData := voiceReadyData{}
 	json.Unmarshal(payload.D, &readyData)
 
-	// Store voice UDP data and ssrc
 	guild.vSsrc = readyData.Ssrc
 	guild.vUrl = fmt.Sprintf(
 		"%s:%d", readyData.Ip, readyData.Port,
 	)
 
-	// Send SELECT PROTOCOL event
 	if err = vSend(ctx, guild.vWs, &cachedSelectPrtcl); err != nil {
 		return err
 	}
 
-	// Receive description
 	// Sometimes opcodes 18, 20 (unknown), or 5 (speaking) are sent
+	// These should be discarded until opcode 4 (session description)
+	// is received
 	for payload.Op != voiceSessDesc {
 		if err = vRead(ctx, guild.vWs, &payload); err != nil {
 			return err
@@ -795,11 +760,8 @@ func vConnect(ctx context.Context, guild *guildState) error {
 	}
 	sessData := voiceSessionDesc{}
 	json.Unmarshal(payload.D, &sessData)
-
-	// Store secret key
 	json.Unmarshal(sessData.SecretKey, &guild.vSecretKey)
 
-	// Change to READY state
 	guild.vState = vGwReady
 	return nil
 }
@@ -831,10 +793,8 @@ func vServe(ctx context.Context, guild *guildState) error {
 				break
 			}
 
-			// Handle event according to opcode
 			switch payload.Op {
 			case voiceHeartbeat:
-				// Send heartbeat
 				err = vSend(gwCtx, guild.vWs, &cachedHeartbeat)
 				if err != nil {
 					isReading = false
@@ -846,8 +806,8 @@ func vServe(ctx context.Context, guild *guildState) error {
 			}
 		}
 
-		// Change to Resuming state
-		// Cancel all child tasks
+		// Cancel child tasks
+		// (vHeartbeat and vUdp)
 		guild.vState = vGwResuming
 		gwCancel()
 
@@ -868,10 +828,8 @@ func vServe(ctx context.Context, guild *guildState) error {
 			return err
 		}
 
-		// Close websocket
 		guild.vWs.Close(websocket.StatusServiceRestart, "")
 
-		// Connect to resume url
 		dialCtx, dialCancel := context.WithTimeout(
 			ctx, defaultTimeout)
 		newWs, _, err := websocket.Dial(dialCtx, guild.vEndpoint, nil)
@@ -881,17 +839,14 @@ func vServe(ctx context.Context, guild *guildState) error {
 		}
 		guild.vWs = newWs
 
-		// Receive HELLO event
 		if err = vRead(gwCtx, guild.vWs, &payload); err != nil {
 			return err
 		}
 		helloData := voiceHelloData{}
 		json.Unmarshal(payload.D, &helloData)
 
-		// Store hb interval
 		guild.vHeartbeatIntv = int(helloData.Interval)
 
-		// Send RESUME event
 		resumeData := voiceResumeData{
 			ServerId:  guild.guildId,
 			SessionId: guild.vSessId,
@@ -903,7 +858,6 @@ func vServe(ctx context.Context, guild *guildState) error {
 			return err
 		}
 
-		// Change to READY state
 		guild.vState = vGwReady
 	}
 }
@@ -926,7 +880,6 @@ func vHeartbeat(ctx context.Context, guild *guildState) error {
 }
 
 func vUdp(ctx context.Context, guild *guildState) error {
-	// Open voice udp socket
 	sock, err := net.Dial("udp", guild.vUrl)
 	if err != nil {
 		return err

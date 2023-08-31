@@ -21,7 +21,6 @@ const VERSION = "v0.3.4-playtest"
 const dateFmt = "2006-01-02T15-04-05"
 
 func main() {
-	// Read env variables
 	fmt.Println("discordyt", VERSION)
 	if len(os.Args) < 2 {
 		fmt.Println(".env missing")
@@ -33,8 +32,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Sync global discord bot commands
-	// if "sync" flag present
 	if len(os.Args) > 2 {
 		if os.Args[2] == "sync" {
 			fmt.Println("syncing commands...")
@@ -48,7 +45,6 @@ func main() {
 		}
 	}
 
-	// Open log file
 	f, err := os.Create(
 		config["LOG_FOLDER"] + "/discordyt-" +
 			time.Now().Format(dateFmt) + ".log",
@@ -58,7 +54,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Redirect stderr to log file
 	_, err = paniclog.RedirectStderr(f)
 	if err != nil {
 		fmt.Println("log redirect fail", err)
@@ -68,7 +63,6 @@ func main() {
 
 	slog.Info("discordyt", "v", VERSION)
 
-	// Prepare sig int (Ctrl + C) channel
 	sigint := make(chan os.Signal, 1)
 	signal.Notify(sigint, os.Interrupt)
 
@@ -130,14 +124,12 @@ func main() {
 		}
 	}()
 
-	// Wait for sig int
 	<-sigint
 	slog.Info("closing...")
 	gw.Close()
 }
 
 func sync(id, token string) error {
-	// Define command structure
 	type syncCmdOption struct {
 		Name        string `json:"name"`
 		Type        int    `json:"type"`
@@ -152,7 +144,6 @@ func sync(id, token string) error {
 	}
 	client := &http.Client{}
 
-	// Sync play command
 	data, _ := json.Marshal(syncCmd{
 		Name: "play",
 		Type: 1,
@@ -191,7 +182,6 @@ func sync(id, token string) error {
 		)
 	}
 
-	// Sync stop command
 	data, _ = json.Marshal(syncCmd{
 		Name: "stop",
 		Type: 1,

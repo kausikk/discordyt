@@ -985,7 +985,7 @@ func vRead(ctx context.Context, c *websocket.Conn, payload *voiceGwPayload) erro
 	if err != nil {
 		return err
 	}
-	json.Unmarshal(raw, payload) // Unhandled err
+	json.Unmarshal(raw, payload)
 	if payload.Op != voiceHeartbeatAck {
 		slog.Debug(
 			"voice read",

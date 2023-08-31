@@ -354,9 +354,6 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 	if !ok {
 		err := func() error {
 			cmd := exec.Command(
-				"conda",
-				"run",
-				"-n", "yt-bot-env",
 				"yt-dlp",
 				"-f", ytdlpFormat,
 				"-o", songFolder+"/%(id)s-%(duration)s.%(ext)s",

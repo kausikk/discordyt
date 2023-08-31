@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"time"
@@ -28,6 +31,21 @@ func main() {
 	if err != nil {
 		fmt.Println(".env parse fail", err)
 		os.Exit(1)
+	}
+
+	// Sync global discord bot commands
+	// if "sync" flag present
+	if len(os.Args) > 2 {
+		if os.Args[2] == "sync" {
+			fmt.Println("syncing commands...")
+			err := sync(config["BOT_APP_ID"], config["BOT_TOKEN"])
+			if err != nil {
+				fmt.Println("sync commands fail", err)
+			} else {
+				fmt.Println("success")
+			}
+			return
+		}
 	}
 
 	// Open log file
@@ -116,4 +134,93 @@ func main() {
 	<-sigint
 	slog.Info("closing...")
 	gw.Close()
+}
+
+func sync(id, token string) error {
+	// Define command structure
+	type syncCmdOption struct {
+		Name        string `json:"name"`
+		Type        int    `json:"type"`
+		Description string `json:"description"`
+		Required    bool   `json:"required"`
+	}
+	type syncCmd struct {
+		Name        string          `json:"name"`
+		Type        int             `json:"type"`
+		Description string          `json:"description"`
+		Options     []syncCmdOption `json:"options"`
+	}
+	client := &http.Client{}
+
+	// Sync play command
+	data, _ := json.Marshal(syncCmd{
+		Name: "play",
+		Type: 1,
+		Description: "Play a song from Youtube",
+		Options: []syncCmdOption{
+			{
+				Name: "query",
+				Description: "Keywords to search for video",
+				Type: 3,
+				Required: true,
+			},
+		},
+	})
+	req, err := http.NewRequest(
+		"POST",
+		fmt.Sprintf(
+			"%s/applications/%s/commands",
+			discordApi, id,
+		),
+		bytes.NewReader(data),
+	)
+	if err != nil {
+		return err
+	}
+	req.Header.Add("Authorization", "Bot " + token)
+	req.Header.Add("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf(
+			"post fail, status: %d",
+			resp.StatusCode,
+		)
+	}
+
+	// Sync stop command
+	data, _ = json.Marshal(syncCmd{
+		Name: "stop",
+		Type: 1,
+		Description: "Stop song and leave channel",
+	})
+	req, err = http.NewRequest(
+		"POST",
+		fmt.Sprintf(
+			"%s/applications/%s/commands",
+			discordApi, id,
+		),
+		bytes.NewReader(data),
+	)
+	if err != nil {
+		return err
+	}
+	req.Header.Add("Authorization", "Bot " + token)
+	req.Header.Add("Content-Type", "application/json")
+	resp, err = client.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf(
+			"post fail, status: %d",
+			resp.StatusCode,
+		)
+	}
+
+	return nil
 }

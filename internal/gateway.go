@@ -450,16 +450,9 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, songPath string) 
 			if segLen == partialPacketLen {
 				pStart += partialPacketLen
 			} else {
-				// Copy packet to new buffer
-				// and send to vUdp
-				packet := make([]byte, pLen)
-				copy(packet, packetBuf[:pLen])
-				pLen = 0
-				pStart = 0
-				pNum += 1
 				timer.Reset(packetSendTimeout)
 				select {
-				case guild.vPackets <- packet:
+				case guild.vPackets <- packetBuf[:pLen]:
 					ok := <-guild.vPackAck
 					if !ok {
 						return errors.New("packet send fail")
@@ -470,9 +463,11 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, songPath string) 
 					return rootctx.Err()
 				}
 				timer.Stop()
-
+				pLen = 0
+				pStart = 0
 				// Wait for remaining burst duration after
 				// sending packetBurst packets
+				pNum += 1
 				if pNum == packetBurst {
 					dt := burstDuration - time.Since(prevt)
 					if dt > 0 {

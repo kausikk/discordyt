@@ -907,15 +907,21 @@ func vUdp(ctx context.Context, guild *guildState) error {
 	defer timer.Stop()
 	timer.Stop()
 
-	// xsalsa20_poly1305 stuff, see
+	// xsalsa20_poly1305 stuff, see:
 	// https://github.com/bwmarrin/discordgo
-	// https://discord.com/developers/docs/topics/
-	// voice-connections#encrypting-and-sending-voice
+	// https://discord.com/developers/docs/topics/voice-connections
+	// Encrypted message will be appended to header, so
+	// make header big enough to hold an entire packet
 	nonce := [nonceLen]byte{}
-	header := [rtpHeaderLen]byte{}
+	header := make(
+		[]byte,
+		rtpHeaderLen,
+		rtpHeaderLen + maxPacketLen,
+	)
 	header[0] = 0x80
 	header[1] = 0x78
 	binary.BigEndian.PutUint32(header[8:], guild.vSsrc)
+	copy(nonce[:], header)
 
 	var sequence uint16
 	var timestamp uint32
@@ -933,14 +939,13 @@ func vUdp(ctx context.Context, guild *guildState) error {
 				}
 				isSpeaking = true
 			}
-			// more xsalsa20_poly1305 stuff
+			// Copy seq and tstamp into the nonce buffer
 			binary.BigEndian.PutUint16(header[2:], sequence)
 			binary.BigEndian.PutUint32(header[4:], timestamp)
-			sequence += 1
-			timestamp += 960
-			copy(nonce[:], header[:])
+			copy(nonce[2:8], header[2:8])
+			// More xsalsa20_poly1305 stuff
 			encrypted := secretbox.Seal(
-				header[:],
+				header,
 				packet,
 				&nonce,
 				&guild.vSecretKey,
@@ -950,6 +955,8 @@ func vUdp(ctx context.Context, guild *guildState) error {
 				guild.vPackAck <- false
 				return err
 			}
+			sequence += 1
+			timestamp += 960
 			guild.vPackAck <- true
 			timer.Stop()
 			timer.Reset(silenceTimeout)

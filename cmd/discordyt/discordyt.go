@@ -16,7 +16,7 @@ import (
 	"github.com/virtuald/go-paniclog"
 )
 
-const VERSION = "v0.3.4-playtest"
+const VERSION = "v0.3.4-playtest-no-allocs"
 
 const dateFmt = "2006-01-02T15-04-05"
 

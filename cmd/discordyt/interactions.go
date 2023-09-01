@@ -93,8 +93,8 @@ type findResult struct {
 
 func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan internal.InteractionData, guildId, botAppId, ytApiKey, songFolder string) {
 	q := &songQueue{}
-	doneFind := make(chan findResult, maxSongQLen)
-	donePlay := make(chan songid, maxSongQLen)
+	doneFind := make(chan findResult)
+	donePlay := make(chan songid)
 
 	play := func(path string, id songid) {
 		slog.Info("play start", "p", path, "g", guildId)
@@ -415,7 +415,6 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 				return err
 			}
 
-			// Delete .webm file
 			os.Remove(webmPath)
 			return nil
 		}()

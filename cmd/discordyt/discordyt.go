@@ -63,18 +63,17 @@ func main() {
 
 	slog.Info("discordyt", "v", VERSION)
 
-	sigint := make(chan os.Signal, 1)
+	sigint := make(chan os.Signal, 2)
 	signal.Notify(sigint, os.Interrupt)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Start gateway
+	// Open gateway
 	gw, err := internal.Connect(
 		ctx,
 		config["BOT_TOKEN"],
 		config["BOT_APP_ID"],
-		config["BOT_PUBLIC_KEY"],
 		config["SONG_FOLDER"],
 	)
 	if err != nil {
@@ -82,45 +81,30 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Start Listen/Reconnect loop
+	// Start serving gateway
 	go func() {
-		for {
-			select {
-			default:
-				err = gw.Serve(ctx)
-				slog.Error("gw serve fail", "e", err)
-				err = gw.Reconnect(ctx)
-				if err != nil {
-					slog.Error("gw reconnect fail", "e", err)
-					return
-				}
-			case <-ctx.Done():
-				return
-			}
-		}
+		err = gw.Serve(ctx)
+		slog.Error("gw serve fail", "e", err)
+		sigint<-os.Interrupt
 	}()
 
 	// Start command loop
 	guildChnls := make(map[string]chan internal.InteractionData)
 	go func() {
 		for {
-			select {
-			case data := <-gw.Cmd():
-				chnl, ok := guildChnls[data.GuildId]
-				if !ok {
-					chnl = make(chan internal.InteractionData)
-					guildChnls[data.GuildId] = chnl
-					go guildCmdHandler(
-						gw, ctx, chnl, data.GuildId,
-						config["BOT_APP_ID"],
-						config["YT_API_KEY"],
-						config["SONG_FOLDER"],
-					)
-				}
-				chnl <- data
-			case <-ctx.Done():
-				return
+			data := <-gw.Cmd()
+			chnl, ok := guildChnls[data.GuildId]
+			if !ok {
+				chnl = make(chan internal.InteractionData)
+				guildChnls[data.GuildId] = chnl
+				go guildCmdHandler(
+					gw, ctx, chnl, data.GuildId,
+					config["BOT_APP_ID"],
+					config["YT_API_KEY"],
+					config["SONG_FOLDER"],
+				)
 			}
+			chnl <- data	
 		}
 	}()
 

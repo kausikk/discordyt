@@ -203,7 +203,7 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 
 	// Contains read loop and resume sequence
 	// Returns nil if resume succeeds
-	readNresume := func() error {	
+	readNresume := func() error {
 		// Start heartbeat
 		hbCtx, hbCancel := context.WithCancel(rootctx)
 		go heartbeater(hbCtx, gw)
@@ -217,7 +217,7 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 		for isReading {
 			readErr = read(rootctx, gw.ws, &readPayload)
 			if readErr != nil {
-				slog.Error("gw read fail", "e", readErr)
+				slog.Info("gw read fail", "e", readErr)
 				isReading = false
 				break
 			}
@@ -248,7 +248,7 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 		hbCancel()
 		gw.ws.Close(websocket.StatusNormalClosure, "")
 		gw.state = gwClosed
-	
+
 		// If root ctx cancelled, dont attempt resume
 		if rootctx.Err() != nil {
 			return rootctx.Err()
@@ -575,7 +575,7 @@ func handleDispatch(ctx context.Context, gw *Gateway, payload *gatewayRead) {
 		if guild.chnlId == NullChannelId {
 			vClose(guild)
 			notifyJoin(guild, NullChannelId)
-		// Join voice gateway with new server endpoint and token
+			// Join voice gateway with new server endpoint and token
 		} else if guild.freshTokEnd {
 			startVoiceGw(ctx, guild)
 		}
@@ -796,11 +796,11 @@ func vServe(ctx context.Context, guild *guildState) error {
 		var readErr error
 		payload := voiceGwPayload{}
 		isReading := true
-	
+
 		// Enter read loop
 		for isReading {
 			if readErr = vRead(gwCtx, guild.vWs, &payload); readErr != nil {
-				slog.Error(
+				slog.Info(
 					"voice read fail",
 					"g", guild.guildId,
 					"e", readErr,
@@ -929,7 +929,7 @@ func vUdp(ctx context.Context, guild *guildState) error {
 	header := make(
 		[]byte,
 		rtpHeaderLen,
-		rtpHeaderLen + maxPacketLen,
+		rtpHeaderLen+maxPacketLen,
 	)
 	header[0] = 0x80
 	header[1] = 0x78

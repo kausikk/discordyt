@@ -85,7 +85,7 @@ func main() {
 	go func() {
 		err = gw.Serve(ctx)
 		slog.Error("gw serve fail", "e", err)
-		sigint<-os.Interrupt
+		sigint <- os.Interrupt
 	}()
 
 	// Start command loop
@@ -104,7 +104,7 @@ func main() {
 					config["SONG_FOLDER"],
 				)
 			}
-			chnl <- data	
+			chnl <- data
 		}
 	}()
 
@@ -129,15 +129,15 @@ func sync(id, token string) error {
 	client := &http.Client{}
 
 	data, _ := json.Marshal(syncCmd{
-		Name: "play",
-		Type: 1,
+		Name:        "play",
+		Type:        1,
 		Description: "Play a song from Youtube",
 		Options: []syncCmdOption{
 			{
-				Name: "query",
+				Name:        "query",
 				Description: "Keywords to search for video",
-				Type: 3,
-				Required: true,
+				Type:        3,
+				Required:    true,
 			},
 		},
 	})
@@ -152,7 +152,7 @@ func sync(id, token string) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Add("Authorization", "Bot " + token)
+	req.Header.Add("Authorization", "Bot "+token)
 	req.Header.Add("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
@@ -167,8 +167,8 @@ func sync(id, token string) error {
 	}
 
 	data, _ = json.Marshal(syncCmd{
-		Name: "stop",
-		Type: 1,
+		Name:        "stop",
+		Type:        1,
 		Description: "Stop song and leave channel",
 	})
 	req, err = http.NewRequest(
@@ -182,7 +182,7 @@ func sync(id, token string) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Add("Authorization", "Bot " + token)
+	req.Header.Add("Authorization", "Bot "+token)
 	req.Header.Add("Content-Type", "application/json")
 	resp, err = client.Do(req)
 	if err != nil {

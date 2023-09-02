@@ -96,7 +96,6 @@ type vGwState int
 const (
 	vGwClosed vGwState = iota
 	vGwReady
-	vGwResuming
 )
 
 type guildState struct {
@@ -141,18 +140,21 @@ func Connect(rootctx context.Context, botToken, botAppId, songFolder string) (*G
 }
 
 func connect(rootctx context.Context, gw *Gateway) error {
+	if gw.state != gwClosed {
+		return errors.New("gw not closed")
+	}
+
 	readPayload := gatewayRead{}
 	sendPayload := gatewaySend{}
-	gw.state = gwClosed
 
 	// Connect to Discord websocket
-	var err error
 	dialCtx, dialCancel := context.WithTimeout(rootctx, defaultTimeout)
-	gw.ws, _, err = websocket.Dial(dialCtx, discordWSS, nil)
+	newWs, _, err := websocket.Dial(dialCtx, discordWSS, nil)
 	dialCancel()
 	if err != nil {
 		return err
 	}
+	gw.ws = newWs
 
 	if err := read(rootctx, gw.ws, &readPayload); err != nil {
 		gw.ws.Close(websocket.StatusInternalError, "")
@@ -195,9 +197,13 @@ func connect(rootctx context.Context, gw *Gateway) error {
 }
 
 func (gw *Gateway) Serve(rootctx context.Context) error {
+	if gw.state != gwReady {
+		return errors.New("gw not connected")
+	}
+
 	// Contains read loop and resume sequence
 	// Returns nil if resume succeeds
-	readNresume := func() error {
+	readNresume := func() error {	
 		// Start heartbeat
 		hbCtx, hbCancel := context.WithCancel(rootctx)
 		go heartbeater(hbCtx, gw)
@@ -239,9 +245,10 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 			}
 		}
 
-		gw.state = gwResuming
 		hbCancel()
-
+		gw.ws.Close(websocket.StatusNormalClosure, "")
+		gw.state = gwClosed
+	
 		// If root ctx cancelled, dont attempt resume
 		if rootctx.Err() != nil {
 			return rootctx.Err()
@@ -254,8 +261,6 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 			return readErr
 		}
 
-		gw.ws.Close(websocket.StatusServiceRestart, "")
-
 		dialCtx, dialCancel := context.WithTimeout(
 			rootctx, defaultTimeout)
 		newWs, _, err := websocket.Dial(dialCtx, gw.resumeUrl, nil)
@@ -266,6 +271,7 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 		gw.ws = newWs
 
 		if err := read(rootctx, gw.ws, &readPayload); err != nil {
+			gw.ws.Close(websocket.StatusInternalError, "")
 			return err
 		}
 		helloData := helloData{}
@@ -281,6 +287,7 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 		sendPayload.Op = resume
 		sendPayload.D, _ = json.Marshal(&resumeData)
 		if err := send(rootctx, gw.ws, &sendPayload); err != nil {
+			gw.ws.Close(websocket.StatusInternalError, "")
 			return err
 		}
 
@@ -301,6 +308,10 @@ func (gw *Gateway) Serve(rootctx context.Context) error {
 }
 
 func (gw *Gateway) ChangeChannel(rootctx context.Context, guildId string, channelId string) error {
+	if gw.state != gwReady {
+		return errors.New("gw not connected")
+	}
+
 	// Check if bot is already in channel
 	// or if attempting to leave channel
 	// when it never joined
@@ -360,6 +371,10 @@ func (gw *Gateway) ChangeChannel(rootctx context.Context, guildId string, channe
 }
 
 func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, songPath string) error {
+	if gw.state != gwReady {
+		return errors.New("gw not connected")
+	}
+
 	// Get guild state
 	guild, ok := getGuildState(gw, guildId)
 	if !ok {
@@ -496,6 +511,10 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, songPath string) 
 }
 
 func (gw *Gateway) StopAudio(guildId string) error {
+	if gw.state != gwReady {
+		return errors.New("gw not connected")
+	}
+
 	guild, ok := getGuildState(gw, guildId)
 	if !ok {
 		return errors.New("gw not in guild")
@@ -521,7 +540,9 @@ func (gw *Gateway) Close() {
 		guild.freshTokEnd = false
 		guild.freshChnlSess = false
 	}
-	gw.ws.Close(websocket.StatusNormalClosure, "")
+	if gw.ws != nil {
+		gw.ws.Close(websocket.StatusNormalClosure, "")
+	}
 }
 
 func handleDispatch(ctx context.Context, gw *Gateway, payload *gatewayRead) {
@@ -698,22 +719,18 @@ func send(ctx context.Context, c *websocket.Conn, payload *gatewaySend) error {
 }
 
 func vConnect(ctx context.Context, guild *guildState) error {
-	var err error
 	payload := voiceGwPayload{}
 
 	dialCtx, dialCancel := context.WithTimeout(ctx, defaultTimeout)
-	guild.vWs, _, err = websocket.Dial(dialCtx, guild.vEndpoint, nil)
+	newWs, _, err := websocket.Dial(dialCtx, guild.vEndpoint, nil)
 	dialCancel()
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if guild.vState == vGwClosed {
-			guild.vWs.Close(websocket.StatusInternalError, "")
-		}
-	}()
+	guild.vWs = newWs
 
-	if err = vRead(ctx, guild.vWs, &payload); err != nil {
+	if err := vRead(ctx, guild.vWs, &payload); err != nil {
+		guild.vWs.Close(websocket.StatusInternalError, "")
 		return err
 	}
 	helloData := voiceHelloData{}
@@ -729,11 +746,13 @@ func vConnect(ctx context.Context, guild *guildState) error {
 	}
 	payload.Op = voiceIdentify
 	payload.D, _ = json.Marshal(&idData)
-	if err = vSend(ctx, guild.vWs, &payload); err != nil {
+	if err := vSend(ctx, guild.vWs, &payload); err != nil {
+		guild.vWs.Close(websocket.StatusInternalError, "")
 		return err
 	}
 
-	if err = vRead(ctx, guild.vWs, &payload); err != nil {
+	if err := vRead(ctx, guild.vWs, &payload); err != nil {
+		guild.vWs.Close(websocket.StatusInternalError, "")
 		return err
 	}
 	readyData := voiceReadyData{}
@@ -744,7 +763,8 @@ func vConnect(ctx context.Context, guild *guildState) error {
 		"%s:%d", readyData.Ip, readyData.Port,
 	)
 
-	if err = vSend(ctx, guild.vWs, &cachedSelectPrtcl); err != nil {
+	if err := vSend(ctx, guild.vWs, &cachedSelectPrtcl); err != nil {
+		guild.vWs.Close(websocket.StatusInternalError, "")
 		return err
 	}
 
@@ -752,7 +772,8 @@ func vConnect(ctx context.Context, guild *guildState) error {
 	// These should be discarded until opcode 4 (session description)
 	// is received
 	for payload.Op != voiceSessDesc {
-		if err = vRead(ctx, guild.vWs, &payload); err != nil {
+		if err := vRead(ctx, guild.vWs, &payload); err != nil {
+			guild.vWs.Close(websocket.StatusInternalError, "")
 			return err
 		}
 	}
@@ -765,12 +786,6 @@ func vConnect(ctx context.Context, guild *guildState) error {
 }
 
 func vServe(ctx context.Context, guild *guildState) error {
-	var err error
-	payload := voiceGwPayload{}
-
-	// If resume loop ends, close gateway
-	defer vClose(guild)
-
 	// Enter resume loop
 	for {
 		// Start heartbeat
@@ -778,22 +793,24 @@ func vServe(ctx context.Context, guild *guildState) error {
 		go vHeartbeater(gwCtx, guild)
 		go vUdp(gwCtx, guild)
 
-		// Enter read loop
+		var readErr error
+		payload := voiceGwPayload{}
 		isReading := true
+	
+		// Enter read loop
 		for isReading {
-			if err = vRead(gwCtx, guild.vWs, &payload); err != nil {
+			if readErr = vRead(gwCtx, guild.vWs, &payload); readErr != nil {
 				slog.Error(
 					"voice read fail",
 					"g", guild.guildId,
-					"e", err,
+					"e", readErr,
 				)
 				isReading = false
 				break
 			}
-
 			switch payload.Op {
 			case voiceHeartbeat:
-				err = vSend(gwCtx, guild.vWs, &cachedHeartbeat)
+				err := vSend(gwCtx, guild.vWs, &cachedHeartbeat)
 				if err != nil {
 					isReading = false
 				}
@@ -806,27 +823,21 @@ func vServe(ctx context.Context, guild *guildState) error {
 
 		// Cancel child tasks
 		// (vHeartbeat and vUdp)
-		guild.vState = vGwResuming
 		gwCancel()
+		guild.vWs.Close(websocket.StatusNormalClosure, "")
+		guild.vState = vGwClosed
 
 		// If root ctx cancelled, dont attempt resume
 		if ctx.Err() != nil {
-			return err
+			return ctx.Err()
 		}
 
 		// Check if gateway can be resumed
-		status := websocket.CloseStatus(err)
-		slog.Info("voice close", "g", guild.guildId, "code", status)
+		status := websocket.CloseStatus(readErr)
 		canResume, exists := voiceValidResumeCodes[status]
 		if !canResume && exists {
-			slog.Error(
-				"voice resume unable",
-				"g", guild.guildId,
-			)
-			return err
+			return readErr
 		}
-
-		guild.vWs.Close(websocket.StatusServiceRestart, "")
 
 		dialCtx, dialCancel := context.WithTimeout(
 			ctx, defaultTimeout)
@@ -837,7 +848,8 @@ func vServe(ctx context.Context, guild *guildState) error {
 		}
 		guild.vWs = newWs
 
-		if err = vRead(gwCtx, guild.vWs, &payload); err != nil {
+		if err := vRead(gwCtx, guild.vWs, &payload); err != nil {
+			guild.vWs.Close(websocket.StatusInternalError, "")
 			return err
 		}
 		helloData := voiceHelloData{}
@@ -852,7 +864,8 @@ func vServe(ctx context.Context, guild *guildState) error {
 		}
 		payload.Op = voiceResume
 		payload.D, _ = json.Marshal(&resumeData)
-		if err = vSend(ctx, guild.vWs, &payload); err != nil {
+		if err := vSend(ctx, guild.vWs, &payload); err != nil {
+			guild.vWs.Close(websocket.StatusInternalError, "")
 			return err
 		}
 
@@ -975,12 +988,11 @@ func vUdp(ctx context.Context, guild *guildState) error {
 	}
 }
 
-func vClose(guild *guildState) error {
+func vClose(guild *guildState) {
 	guild.vState = vGwClosed
 	if guild.vWs != nil {
 		guild.vWs.Close(websocket.StatusNormalClosure, "")
 	}
-	return nil
 }
 
 func vRead(ctx context.Context, c *websocket.Conn, payload *voiceGwPayload) error {

@@ -20,7 +20,7 @@ import (
 )
 
 const discordApi = "https://discord.com/api"
-const youtubeApi = "https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=3&type=video&safeSearch=none"
+const youtubeApi = "https://www.googleapis.com/youtube/v3/search"
 
 const ytdlpFormat = "ba[acodec=opus][asr=48K][ext=webm][audio_channels=2]"
 
@@ -311,8 +311,11 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 		params := req.URL.Query()
 		params.Set("q", html.EscapeString(query))
 		params.Set("key", ytApiKey)
+		params.Set("part", "snippet")
+		params.Set("type", "video")
+		params.Set("maxResults", "1")
+		params.Set("safeSearch", "none")
 		req.URL.RawQuery = params.Encode()
-
 		client := &http.Client{}
 		resp, err := client.Do(req)
 		if err != nil {

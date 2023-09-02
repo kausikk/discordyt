@@ -74,7 +74,6 @@ func main() {
 		ctx,
 		config["BOT_TOKEN"],
 		config["BOT_APP_ID"],
-		config["SONG_FOLDER"],
 	)
 	if err != nil {
 		slog.Error("gw connect fail", "e", err)

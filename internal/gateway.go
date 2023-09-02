@@ -78,7 +78,6 @@ type Gateway struct {
 	state           gwState
 	botToken        string
 	botAppId        string
-	songFolder      string
 	userOccLock     sync.RWMutex
 	userOccupancy   map[string]string
 	guildStatesLock sync.RWMutex
@@ -122,12 +121,11 @@ type guildState struct {
 	vSecretKey     [32]byte
 }
 
-func Connect(rootctx context.Context, botToken, botAppId, songFolder string) (*Gateway, error) {
+func Connect(rootctx context.Context, botToken, botAppId string) (*Gateway, error) {
 	// Init gateway
 	gw := &Gateway{
 		botToken:      botToken,
 		botAppId:      botAppId,
-		songFolder:    songFolder,
 		userOccupancy: make(map[string]string),
 		guildStates:   make(map[string]*guildState),
 		cmd:           make(chan InteractionData),

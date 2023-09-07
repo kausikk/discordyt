@@ -92,10 +92,8 @@ type findResult struct {
 }
 
 func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan internal.InteractionData, guildId, botAppId, ytApiKey, songFolder string) {
-	q := &songQueue{}
 	doneFind := make(chan findResult)
 	donePlay := make(chan songid)
-
 	play := func(path string, id songid) {
 		slog.Info("play start", "p", path, "g", guildId)
 		err := gw.PlayAudio(ctx, guildId, path)
@@ -106,6 +104,9 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 		}
 		donePlay <- id
 	}
+
+	// Song queue for tracking all songs in-flight
+	q := &songQueue{}
 
 	// Create inactive timer and stop immediately
 	timer := time.NewTimer(inactiveTimeout)
@@ -360,7 +361,7 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 				"yt-dlp",
 				"-f", ytdlpFormat,
 				"-o", songFolder+"/%(id)s-%(duration)s.%(ext)s",
-				songId,
+				"--", songId, // -- marks the end of options
 			)
 			stdErr := strings.Builder{}
 			cmd.Stderr = &stdErr

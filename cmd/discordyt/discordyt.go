@@ -16,7 +16,7 @@ import (
 	"github.com/virtuald/go-paniclog"
 )
 
-const VERSION = "v0.3.5"
+const VERSION = "v0.3.6"
 
 const dateFmt = "2006-01-02T15-04-05"
 
@@ -63,6 +63,7 @@ func main() {
 
 	slog.Info("discordyt", "v", VERSION)
 
+	// Create channel to receive sig int (Ctrl+C)
 	sigint := make(chan os.Signal, 2)
 	signal.Notify(sigint, os.Interrupt)
 

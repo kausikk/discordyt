@@ -16,7 +16,7 @@ import (
 	"github.com/virtuald/go-paniclog"
 )
 
-const VERSION = "v0.3.6"
+const VERSION = "v0.3.7"
 
 const dateFmt = "2006-01-02T15-04-05"
 
@@ -80,6 +80,7 @@ func main() {
 		slog.Error("gw connect fail", "e", err)
 		os.Exit(1)
 	}
+	defer gw.Close()
 
 	// Start serving gateway
 	go func() {
@@ -110,7 +111,6 @@ func main() {
 
 	<-sigint
 	slog.Info("closing...")
-	gw.Close()
 }
 
 func sync(id, token string) error {

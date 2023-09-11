@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,7 +23,9 @@ import (
 const discordApi = "https://discord.com/api"
 const youtubeApi = "https://www.googleapis.com/youtube/v3/search"
 
-const ytdlpFormat = "ba[acodec=opus][asr=48K][ext=webm][audio_channels=2]"
+// https://datatracker.ietf.org/doc/html/rfc3533#section-6
+const pageHeaderLen = 27
+const maxSegTableLen = 255
 
 const maxSongQLen = 50
 const maxSongQMsg = "Too many songs in queue (max 50)"
@@ -350,60 +353,51 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 		}
 		return
 	}
+
 	title := html.UnescapeString(
 		results.Items[0].Snippet.Title)
 	songId := results.Items[0].Id.VideoId
+	opusPath := songFolder + "/" + songId + ".opus"
 
-	songPath, dur, ok := search(songFolder, songId, "opus")
-	if !ok {
-		err := func() error {
+	dur, err := checkSong(opusPath)
+	if err != nil {
+		dur, err := func() (int, error) {
+			stdOut := &strings.Builder{}
+			stdErr := &strings.Builder{}
+
 			cmd := exec.Command(
 				"yt-dlp",
-				"-f", ytdlpFormat,
-				"-o", songFolder+"/%(id)s-%(duration)s.%(ext)s",
-				"--", songId, // -- marks the end of options
+				"--print", "after_video:%(duration)s",
+				"-f", "ba[acodec=opus][asr=48K][ext=webm][audio_channels=2]",
+				"-o", songFolder+"/%(id)s.%(ext)s",
+				"--", songId,
 			)
-			stdErr := strings.Builder{}
-			cmd.Stderr = &stdErr
-			err = cmd.Run()
+			cmd.Stdout = stdOut
+			cmd.Stderr = stdErr
+			err := cmd.Run()
 			ytdlpErr := stdErr.String()
-			if err != nil || strings.Contains(ytdlpErr, "ERROR") {
-				slog.Error("yt-dlp", "e", ytdlpErr)
-				return err
+			if err != nil || len(ytdlpErr) > 0 {
+				return 0, errors.Join(err, errors.New(ytdlpErr))
 			}
 
-			webmPath, dur, ok := search(songFolder, songId, "webm")
-			if !ok {
-				slog.Error("find no webm")
-				return errors.New("could not find webm file")
-			}
+			rawdur := strings.TrimSpace(stdOut.String())
+			dur, _ := strconv.Atoi(rawdur)
 
-			// Make duration human-readable
-			sec, err := strconv.Atoi(dur)
-			if err != nil {
-				slog.Error("find invalid duration")
-				return errors.New("invalid duration")
-			}
-			if sec >= 360 {
-				dur = fmt.Sprintf(
-					"%d:%02d:%02d",
-					sec/3600,
-					(sec/60)%60,
-					sec%60,
-				)
-			} else {
-				dur = fmt.Sprintf(
-					"%d:%02d",
-					sec/60,
-					sec%60,
-				)
-			}
+			stdOut.Reset()
+			stdErr.Reset()
+			webmPath := songFolder + "/" + songId + ".webm"
 
-			opusPath := songFolder + "/" + songId + "-" + dur + ".opus"
 			cmd = exec.Command(
 				"ffmpeg",
+				"-y",
 				"-i", webmPath,
+				"-nostdin",
+				"-nostats",
+				"-loglevel", "error",
 				"-map_metadata", "-1",
+				// This line adds a "duration" tag
+				// to the Opus file's comment header
+				"-metadata", "duration="+rawdur,
 				"-vn",
 				"-c:a", "copy",
 				"-f", "opus",
@@ -411,34 +405,37 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 				"-ac", "2",
 				opusPath,
 			)
-			stdErr.Reset()
-			cmd.Stderr = &stdErr
+			cmd.Stderr = stdErr
 			err = cmd.Run()
-			if err != nil {
-				slog.Error("ffmpeg", "e", stdErr.String())
-				return err
+			ffmpegErr := stdErr.String()
+			if err != nil || len(ffmpegErr) > 0 {
+				return 0, errors.Join(err, errors.New(ffmpegErr))
 			}
 
 			os.Remove(webmPath)
-			return nil
+			return dur, nil
 		}()
 
-		songPath, dur, ok = search(songFolder, songId, "opus")
-		if err != nil || !ok {
-			slog.Error("find no opus", "e", err)
+		if err != nil {
+			slog.Error("find fail", "e", err)
 			done <- findResult{
 				id: id, pass: false,
 			}
 			return
 		}
 
-		slog.Info("find downloaded", "id", songId)
-	} else {
-		slog.Info("find already had", "id", songId)
+		fmtdur := fmtDuration(dur)
+		slog.Info("find downloaded", "id", songId, "dur", fmtdur)
+		done <- findResult{
+			id, true, title + " (" + fmtdur + ")", opusPath,
+		}
+		return
 	}
 
+	fmtdur := fmtDuration(dur)
+	slog.Info("find already downloaded", "id", songId, "dur", fmtdur)
 	done <- findResult{
-		id, true, title + " (" + dur + ")", songPath,
+		id, true, title + " (" + fmtdur + ")", opusPath,
 	}
 }
 
@@ -486,39 +483,116 @@ func patchResp(id, token, msg string) error {
 	return nil
 }
 
-func search(songFolder, songId, ext string) (string, string, bool) {
-	f, err := os.Open(songFolder)
+func checkSong(opusPath string) (int, error) {
+	f, err := os.Open(opusPath)
 	if err != nil {
-		return "", "", false
+		return 0, err
 	}
 	defer f.Close()
 
-	names, err := f.Readdirnames(0)
-	if err != nil {
-		return "", "", false
+	var duration int
+
+	// Parse Opus pages
+	// https://datatracker.ietf.org/doc/html/rfc3533#section-6
+	headerBuf := [pageHeaderLen]byte{}
+	segTable := [maxSegTableLen]byte{}
+
+	for i := 0; i < 2; i++ {
+		// Parse page header
+		n, err := io.ReadFull(f, headerBuf[:])
+		if err == io.EOF || n < pageHeaderLen {
+			break
+		}
+		if string(headerBuf[:4]) != "OggS" {
+			break
+		}
+		tableLen := int(headerBuf[26])
+		_, err = io.ReadFull(f, segTable[:tableLen])
+		if err != nil {
+			break
+		}
+		var sum int64
+		for _, v := range segTable[:tableLen] {
+			sum += int64(v)
+		}
+
+		// Discard first page
+		if i == 0 {
+			_, err := f.Seek(sum, io.SeekCurrent)
+			if err != nil {
+				break
+			}
+			continue
+		}
+
+		// Read entire comment header
+		comments := make([]byte, sum)
+		_, err = io.ReadFull(f, comments)
+		if err != nil {
+			break
+		}
+
+		// https://datatracker.ietf.org/doc/html/rfc7845.html#autoid-19
+		// Read, then chop off vendor string length (skip over magic string)
+		if len(comments) < 12 {
+			break
+		}
+		strlen := binary.LittleEndian.Uint32(comments[8:12])
+		comments = comments[12:]
+		// Chop off vendor string
+		if len(comments) < int(strlen) {
+			break
+		}
+		comments = comments[strlen:]
+		// Read, then chop off user comment list length
+		if len(comments) < 4 {
+			break
+		}
+		numComms := binary.LittleEndian.Uint32(comments[:4])
+		comments = comments[4:]
+
+		for c := 0; c < int(numComms); c++ {
+			// Read, then chop off user comment string length
+			if len(comments) < 4 {
+				break
+			}
+			strlen = binary.LittleEndian.Uint32(comments[:4])
+			comments = comments[4:]
+			// Check if duration, otherwise chop off and keep looping
+			if len(comments) < int(strlen) {
+				break
+			}
+			if !bytes.HasPrefix(comments, []byte("duration=")) {
+				comments = comments[strlen:]
+				continue
+			}
+			// Extract duration
+			comments = comments[9:strlen]
+			if len(comments) < 1 {
+				break
+			}
+			duration, _ = strconv.Atoi(string(comments))
+			break
+		}
 	}
 
-	// Looking for a filename of the form:
-	// SONGID + '-' + DURATION + '.' + EXT
-	nId := len(songId)
-	nExt := len(ext)
-	minLen := nId + 2 + nExt
-	for _, name := range names {
-		nName := len(name)
-		if nName < minLen {
-			continue
-		}
-		if name[:nId] != songId {
-			continue
-		}
-		if name[nName-nExt:nName] != ext {
-			continue
-		}
-		return songFolder + "/" + name,
-			name[nId+1 : nName-nExt-1],
-			true
+	return duration, nil
+}
+
+func fmtDuration(seconds int) string {
+	if seconds >= 3600 {
+		return fmt.Sprintf(
+			"%d:%02d:%02d",
+			seconds/3600,
+			(seconds/60)%60,
+			seconds%60,
+		)
 	}
-	return "", "", false
+	return fmt.Sprintf(
+		"%d:%02d",
+		seconds/60,
+		seconds%60,
+	)
 }
 
 var _uuid songid

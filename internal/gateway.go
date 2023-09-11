@@ -1,7 +1,6 @@
 package internal
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -39,13 +38,9 @@ var gatewayProperties = identifyProperties{
 	Device:  "lenovo thinkcentre",
 }
 
+// https://datatracker.ietf.org/doc/html/rfc3533#section-6
 const pageHeaderLen = 27
 const maxSegTableLen = 255
-const nonceLen = 24
-const rtpHeaderLen = 12
-
-// https://datatracker.ietf.org/doc/html/rfc3533#section-6
-var magicStr = []byte("OggS")
 
 // A packet is composed of at least one segment.
 // A packet is terminated by a segment of length < 255.
@@ -57,6 +52,10 @@ const partialPacketLen = 255
 // 20 ms packet of 128 kbps opus audio is approximately
 // 128000/8 * 20/1000 = 320 bytes. Apply a safety factor.
 const maxPacketLen = 1024
+
+// https://discord.com/developers/docs/topics/voice-connections
+const nonceLen = 24
+const rtpHeaderLen = 12
 
 // Number of packets to send consecutively without waiting
 const packetBurst = 10
@@ -428,7 +427,7 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, songPath string) 
 		if err == io.EOF || n < pageHeaderLen {
 			break
 		}
-		if !bytes.Equal(magicStr, headerBuf[:4]) {
+		if string(headerBuf[:4]) != "OggS" {
 			break
 		}
 		tableLen := int(headerBuf[26])

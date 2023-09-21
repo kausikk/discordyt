@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -231,6 +230,14 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 				)
 				go play(head.path, head.id)
 			} else {
+				// Check if song couldn't be found
+				if song.skip {
+					patchResp(
+						botAppId, head.token,
+						"Could not find song",
+					)
+					break
+				}
 				slog.Info("queued", "p", song.path)
 				patchResp(
 					botAppId, song.token,
@@ -251,7 +258,7 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 			// and marked for skipping until
 			// reaching a song that can be played
 			// or hasn't been found yet
-			for head = q.head(); head != nil; head = q.head() {
+			for head := q.head(); head != nil; head = q.head() {
 				if head.skip {
 					q.pop()
 					continue
@@ -359,80 +366,170 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 	songId := results.Items[0].Id.VideoId
 	opusPath := songFolder + "/" + songId + ".opus"
 
-	dur, err := checkSong(opusPath)
+	f, err := os.Open(opusPath)
+	// Download song if it doesn't already exist
 	if err != nil {
-		dur, err := func() (int, error) {
-			stdOut := &strings.Builder{}
-			stdErr := &strings.Builder{}
+		stdOut := &strings.Builder{}
+		stdErr := &strings.Builder{}
 
-			cmd := exec.Command(
-				"yt-dlp",
-				"--print", "after_video:%(duration)s",
-				"-f", "ba[acodec=opus][asr=48K][ext=webm][audio_channels=2]",
-				"-o", songFolder+"/%(id)s.%(ext)s",
-				"--", songId,
-			)
-			cmd.Stdout = stdOut
-			cmd.Stderr = stdErr
-			err := cmd.Run()
-			ytdlpErr := stdErr.String()
-			if err != nil || len(ytdlpErr) > 0 {
-				return 0, errors.Join(err, errors.New(ytdlpErr))
-			}
-
-			rawdur := strings.TrimSpace(stdOut.String())
-			dur, _ := strconv.Atoi(rawdur)
-
-			stdOut.Reset()
-			stdErr.Reset()
-			webmPath := songFolder + "/" + songId + ".webm"
-
-			cmd = exec.Command(
-				"ffmpeg",
-				"-y",
-				"-i", webmPath,
-				"-nostdin",
-				"-nostats",
-				"-loglevel", "error",
-				"-map_metadata", "-1",
-				// This line adds a "duration" tag
-				// to the Opus file's comment header
-				"-metadata", "duration="+rawdur,
-				"-vn",
-				"-c:a", "copy",
-				"-f", "opus",
-				"-ar", "48000",
-				"-ac", "2",
-				opusPath,
-			)
-			cmd.Stderr = stdErr
-			err = cmd.Run()
-			ffmpegErr := stdErr.String()
-			if err != nil || len(ffmpegErr) > 0 {
-				return 0, errors.Join(err, errors.New(ffmpegErr))
-			}
-
-			os.Remove(webmPath)
-			return dur, nil
-		}()
-
-		if err != nil {
-			slog.Error("find fail", "e", err)
+		cmd := exec.Command(
+			"yt-dlp",
+			"--print", "after_video:%(duration)s",
+			"-f", "ba[acodec=opus][asr=48K][ext=webm][audio_channels=2]",
+			"-o", songFolder+"/%(id)s.%(ext)s",
+			"--", songId,
+		)
+		cmd.Stdout = stdOut
+		cmd.Stderr = stdErr
+		err := cmd.Run()
+		ytdlpErr := stdErr.String()
+		if err != nil || len(ytdlpErr) > 0 {
+			slog.Error("find ytdlp err", "e1", ytdlpErr, "e2", err)
 			done <- findResult{
 				id: id, pass: false,
 			}
 			return
 		}
-
-		fmtdur := fmtDuration(dur)
+	
+		rawdur := strings.TrimSpace(stdOut.String())
+		duration, _ := strconv.Atoi(rawdur)
+	
+		stdOut.Reset()
+		stdErr.Reset()
+		webmPath := songFolder + "/" + songId + ".webm"
+	
+		cmd = exec.Command(
+			"ffmpeg",
+			"-y",
+			"-i", webmPath,
+			"-nostdin",
+			"-nostats",
+			"-loglevel", "error",
+			"-map_metadata", "-1",
+			// This line adds a "duration" tag
+			// to the Opus file's comment header
+			"-metadata", "duration="+rawdur,
+			"-vn",
+			"-c:a", "copy",
+			"-f", "opus",
+			"-ar", "48000",
+			"-ac", "2",
+			opusPath,
+		)
+		cmd.Stderr = stdErr
+		err = cmd.Run()
+		ffmpegErr := stdErr.String()
+		if err != nil || len(ffmpegErr) > 0 {
+			slog.Error("find ffmpeg err", "e1", ffmpegErr, "e2", err)
+			done <- findResult{
+				id: id, pass: false,
+			}
+			return
+		}
+	
+		os.Remove(webmPath)
+	
+		fmtdur := fmtDuration(duration)
 		slog.Info("find downloaded", "id", songId, "dur", fmtdur)
 		done <- findResult{
 			id, true, title + " (" + fmtdur + ")", opusPath,
 		}
 		return
 	}
+	defer f.Close()
 
-	fmtdur := fmtDuration(dur)
+	var duration int
+
+	// Parse Opus pages
+	// https://datatracker.ietf.org/doc/html/rfc3533#section-6
+	headerBuf := [pageHeaderLen]byte{}
+	segTable := [maxSegTableLen]byte{}
+
+	for i := 0; i < 2; i++ {
+		// Parse page header
+		n, err := io.ReadFull(f, headerBuf[:])
+		if err == io.EOF || n < pageHeaderLen {
+			break
+		}
+		if string(headerBuf[:4]) != "OggS" {
+			break
+		}
+		tableLen := int(headerBuf[26])
+		_, err = io.ReadFull(f, segTable[:tableLen])
+		if err != nil {
+			break
+		}
+		var sum int64
+		for _, v := range segTable[:tableLen] {
+			sum += int64(v)
+		}
+
+		// Discard first page
+		if i == 0 {
+			_, err := f.Seek(sum, io.SeekCurrent)
+			if err != nil {
+				break
+			}
+			continue
+		}
+
+		// Read entire comment header
+		comments := make([]byte, sum)
+		_, err = io.ReadFull(f, comments)
+		if err != nil {
+			break
+		}
+
+		// https://datatracker.ietf.org/doc/html/rfc7845.html#autoid-19
+		// Chop off magic string
+		if !bytes.HasPrefix(comments, []byte("OpusTags")) {
+			break
+		}
+		comments = comments[8:]
+		// Read, then chop off vendor string length
+		if len(comments) < 4 {
+			break
+		}
+		strlen := binary.LittleEndian.Uint32(comments[:4])
+		comments = comments[4:]
+		// Chop off vendor string
+		if len(comments) < int(strlen) {
+			break
+		}
+		comments = comments[strlen:]
+		// Read, then chop off user comment list length
+		if len(comments) < 4 {
+			break
+		}
+		numComms := binary.LittleEndian.Uint32(comments[:4])
+		comments = comments[4:]
+
+		for c := 0; c < int(numComms); c++ {
+			// Read, then chop off user comment string length
+			if len(comments) < 4 {
+				break
+			}
+			strlen = binary.LittleEndian.Uint32(comments[:4])
+			comments = comments[4:]
+			// Check if duration, otherwise chop off and keep looping
+			if len(comments) < int(strlen) {
+				break
+			}
+			if !bytes.HasPrefix(comments, []byte("duration=")) {
+				comments = comments[strlen:]
+				continue
+			}
+			// Extract duration
+			comments = comments[9:strlen]
+			if len(comments) < 1 {
+				break
+			}
+			duration, _ = strconv.Atoi(string(comments))
+			break
+		}
+	}
+
+	fmtdur := fmtDuration(duration)
 	slog.Info("find already downloaded", "id", songId, "dur", fmtdur)
 	done <- findResult{
 		id, true, title + " (" + fmtdur + ")", opusPath,
@@ -481,102 +578,6 @@ func patchResp(id, token, msg string) error {
 	}
 	resp.Body.Close()
 	return nil
-}
-
-func checkSong(opusPath string) (int, error) {
-	f, err := os.Open(opusPath)
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-
-	var duration int
-
-	// Parse Opus pages
-	// https://datatracker.ietf.org/doc/html/rfc3533#section-6
-	headerBuf := [pageHeaderLen]byte{}
-	segTable := [maxSegTableLen]byte{}
-
-	for i := 0; i < 2; i++ {
-		// Parse page header
-		n, err := io.ReadFull(f, headerBuf[:])
-		if err == io.EOF || n < pageHeaderLen {
-			break
-		}
-		if string(headerBuf[:4]) != "OggS" {
-			break
-		}
-		tableLen := int(headerBuf[26])
-		_, err = io.ReadFull(f, segTable[:tableLen])
-		if err != nil {
-			break
-		}
-		var sum int64
-		for _, v := range segTable[:tableLen] {
-			sum += int64(v)
-		}
-
-		// Discard first page
-		if i == 0 {
-			_, err := f.Seek(sum, io.SeekCurrent)
-			if err != nil {
-				break
-			}
-			continue
-		}
-
-		// Read entire comment header
-		comments := make([]byte, sum)
-		_, err = io.ReadFull(f, comments)
-		if err != nil {
-			break
-		}
-
-		// https://datatracker.ietf.org/doc/html/rfc7845.html#autoid-19
-		// Read, then chop off vendor string length (skip over magic string)
-		if len(comments) < 12 {
-			break
-		}
-		strlen := binary.LittleEndian.Uint32(comments[8:12])
-		comments = comments[12:]
-		// Chop off vendor string
-		if len(comments) < int(strlen) {
-			break
-		}
-		comments = comments[strlen:]
-		// Read, then chop off user comment list length
-		if len(comments) < 4 {
-			break
-		}
-		numComms := binary.LittleEndian.Uint32(comments[:4])
-		comments = comments[4:]
-
-		for c := 0; c < int(numComms); c++ {
-			// Read, then chop off user comment string length
-			if len(comments) < 4 {
-				break
-			}
-			strlen = binary.LittleEndian.Uint32(comments[:4])
-			comments = comments[4:]
-			// Check if duration, otherwise chop off and keep looping
-			if len(comments) < int(strlen) {
-				break
-			}
-			if !bytes.HasPrefix(comments, []byte("duration=")) {
-				comments = comments[strlen:]
-				continue
-			}
-			// Extract duration
-			comments = comments[9:strlen]
-			if len(comments) < 1 {
-				break
-			}
-			duration, _ = strconv.Atoi(string(comments))
-			break
-		}
-	}
-
-	return duration, nil
 }
 
 func fmtDuration(seconds int) string {

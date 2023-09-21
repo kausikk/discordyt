@@ -233,7 +233,7 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 				// Check if song couldn't be found
 				if song.skip {
 					patchResp(
-						botAppId, head.token,
+						botAppId, song.token,
 						"Could not find song",
 					)
 					break

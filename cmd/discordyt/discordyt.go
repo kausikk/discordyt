@@ -1,12 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"time"
@@ -32,25 +29,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	if len(os.Args) > 2 {
-		if os.Args[2] == "sync" {
-			fmt.Println("syncing commands...")
-			err := sync(config["BOT_APP_ID"], config["BOT_TOKEN"])
-			if err != nil {
-				fmt.Println("sync commands fail", err)
-			} else {
-				fmt.Println("success")
-			}
-			return
-		}
-	}
-
 	f, err := os.Create(
 		config["LOG_FOLDER"] + "/discordyt-" +
 			time.Now().Format(dateFmt) + ".log",
 	)
 	if err != nil {
-		fmt.Println("log open fail", err)
+		fmt.Println("log create fail", err)
 		os.Exit(1)
 	}
 
@@ -89,7 +73,7 @@ func main() {
 		sigint <- os.Interrupt
 	}()
 
-	// Start command loop
+	// Start loop to read and handle commands
 	guildChnls := make(map[string]chan internal.InteractionData)
 	go func() {
 		for {
@@ -111,90 +95,4 @@ func main() {
 
 	<-sigint
 	slog.Info("closing...")
-}
-
-func sync(id, token string) error {
-	type syncCmdOption struct {
-		Name        string `json:"name"`
-		Type        int    `json:"type"`
-		Description string `json:"description"`
-		Required    bool   `json:"required"`
-	}
-	type syncCmd struct {
-		Name        string          `json:"name"`
-		Type        int             `json:"type"`
-		Description string          `json:"description"`
-		Options     []syncCmdOption `json:"options"`
-	}
-	client := &http.Client{}
-
-	data, _ := json.Marshal(syncCmd{
-		Name:        "play",
-		Type:        1,
-		Description: "Play a song from Youtube",
-		Options: []syncCmdOption{
-			{
-				Name:        "query",
-				Description: "Keywords to search for video",
-				Type:        3,
-				Required:    true,
-			},
-		},
-	})
-	req, err := http.NewRequest(
-		"POST",
-		fmt.Sprintf(
-			"%s/applications/%s/commands",
-			discordApi, id,
-		),
-		bytes.NewReader(data),
-	)
-	if err != nil {
-		return err
-	}
-	req.Header.Add("Authorization", "Bot "+token)
-	req.Header.Add("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return fmt.Errorf(
-			"post fail, status: %d",
-			resp.StatusCode,
-		)
-	}
-
-	data, _ = json.Marshal(syncCmd{
-		Name:        "stop",
-		Type:        1,
-		Description: "Stop song and leave channel",
-	})
-	req, err = http.NewRequest(
-		"POST",
-		fmt.Sprintf(
-			"%s/applications/%s/commands",
-			discordApi, id,
-		),
-		bytes.NewReader(data),
-	)
-	if err != nil {
-		return err
-	}
-	req.Header.Add("Authorization", "Bot "+token)
-	req.Header.Add("Content-Type", "application/json")
-	resp, err = client.Do(req)
-	if err != nil {
-		return err
-	}
-	resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return fmt.Errorf(
-			"post fail, status: %d",
-			resp.StatusCode,
-		)
-	}
-
-	return nil
 }

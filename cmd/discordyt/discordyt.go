@@ -73,23 +73,23 @@ func main() {
 		sigint <- os.Interrupt
 	}()
 
-	// Start loop to read and handle commands
-	guildChnls := make(map[string]chan internal.InteractionData)
+	// Start loop to read and handle commands from gateway
+	guildHandlers := make(map[string]chan internal.InteractionData)
 	go func() {
 		for {
-			data := <-gw.Cmd()
-			chnl, ok := guildChnls[data.GuildId]
+			cmd := <-gw.Cmd()
+			handler, ok := guildHandlers[cmd.GuildId]
 			if !ok {
-				chnl = make(chan internal.InteractionData)
-				guildChnls[data.GuildId] = chnl
-				go guildCmdHandler(
-					gw, ctx, chnl, data.GuildId,
+				handler = make(chan internal.InteractionData)
+				guildHandlers[cmd.GuildId] = handler
+				go guildHandler(
+					gw, ctx, handler, cmd.GuildId,
 					config["BOT_APP_ID"],
 					config["YT_API_KEY"],
 					config["SONG_FOLDER"],
 				)
 			}
-			chnl <- data
+			handler<-cmd
 		}
 	}()
 

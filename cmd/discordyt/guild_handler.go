@@ -4,12 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"encoding/json"
-	"fmt"
 	"html"
 	"io"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/exec"
 	"strconv"
@@ -18,9 +15,6 @@ import (
 
 	"github.com/kausikk/discordyt/internal"
 )
-
-const discordApi = "https://discord.com/api"
-const youtubeApi = "https://www.googleapis.com/youtube/v3/search"
 
 // https://datatracker.ietf.org/doc/html/rfc3533#section-6
 const pageHeaderLen = 27
@@ -31,42 +25,6 @@ const maxSongQMsg = "Too many songs in queue (max 50)"
 
 const inactiveTimeout = 5 * time.Minute
 
-type interactionRespType int
-
-const (
-	pong interactionRespType = iota + 1
-	_
-	_
-	channelMessageWithSource
-	deferredChannelMessageWithSource
-	deferredUpdateMsg
-	updateMessage
-	applicationCommandAutocompleteResult
-	modal
-)
-
-type ytSearchList struct {
-	Items []ytSearch `json:"items"`
-}
-type ytSearch struct {
-	Id      ytSearchId      `json:"id"`
-	Snippet ytSearchSnippet `json:"snippet"`
-}
-type ytSearchId struct {
-	VideoId string `json:"videoId"`
-}
-type ytSearchSnippet struct {
-	Title string `json:"title"`
-}
-
-type interactionPost struct {
-	Type interactionRespType `json:"type"`
-	Data interactionContent  `json:"data"`
-}
-type interactionContent struct {
-	Content string `json:"content"`
-}
-
 type songQueue struct {
 	arr   [maxSongQLen]songQueueItem
 	ihead int
@@ -76,14 +34,17 @@ type songQueue struct {
 
 type songid uint32
 
+const FINDING = 0
+const FOUND = 1
+const NOT_FOUND = 2
+
 type songQueueItem struct {
 	id     songid
 	token  string
 	chnlId string
 	title  string
 	path   string
-	found  bool
-	skip   bool
+	found  int
 }
 
 type findResult struct {
@@ -93,85 +54,122 @@ type findResult struct {
 	path  string
 }
 
-func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan internal.InteractionData, guildId, botAppId, ytApiKey, songFolder string) {
-	doneFind := make(chan findResult)
-	donePlay := make(chan songid)
-	play := func(path string, id songid) {
-		slog.Info("play start", "p", path, "g", guildId)
-		err := gw.PlayAudio(ctx, guildId, path)
-		if err != nil {
-			slog.Error("play fail", "e", err, "g", guildId)
-		} else {
-			slog.Info("play done", "g", guildId)
-		}
-		donePlay <- id
-	}
-
+func guildHandler(gw *internal.Gateway, ctx context.Context, cmds chan internal.InteractionData, guildId, botAppId, ytApiKey, songFolder string) {
 	// Song queue for tracking all songs in-flight
 	q := &songQueue{}
+
+	// Receives results of find() and play() functions
+	doneFind := make(chan findResult)
+	donePlay := make(chan songid)
 
 	// Create inactive timer and stop immediately
 	timer := time.NewTimer(inactiveTimeout)
 	defer timer.Stop()
 	timer.Stop()
 
+	startNextSong := func() {
+		// Pop songs that could not been found until reaching
+		// a song that is still finding or ready to be played
+		for head := q.head(); head != nil; head = q.head() {
+			if head.found == NOT_FOUND {
+				q.pop()
+				continue
+			}
+			if head.found == FINDING {
+				break
+			}
+			// Try to join channel
+			err := gw.ChangeChannel(ctx, guildId, head.chnlId)
+			if err != nil {
+				slog.Error(
+					"join fail",
+					"g", guildId,
+					"c", head.chnlId,
+					"e", err,
+				)
+				q.pop()
+				continue
+			}
+			// Play next song
+			go play(gw, ctx, guildId, head.path, head.id, donePlay)
+			break
+		}
+	}
+
 	// Start handle loop
 	for {
 		startInactiveTimer := true
 		select {
-		case data := <-cmd:
-			switch data.Data.Name {
+		case cmd := <-cmds:
+			switch cmd.Data.Name {
 			case "play":
-				if data.ChnlId == "" {
+				if cmd.ChnlId == "" {
 					postResp(
-						data.Id, data.Token,
+						cmd.Id, cmd.Token,
 						"User is not in a channel (try re-joining)",
 						channelMessageWithSource,
 					)
 					break
 				}
 				id, ok := q.push(songQueueItem{
-					token: data.Token, chnlId: data.ChnlId,
+					token: cmd.Token, chnlId: cmd.ChnlId,
 				})
 				// Not enough room in queue
 				if !ok {
 					postResp(
-						data.Id, data.Token, maxSongQMsg,
+						cmd.Id, cmd.Token, maxSongQMsg,
 						channelMessageWithSource,
 					)
 					break
 				}
 				slog.Info(
 					"find start",
-					"q", data.Data.Options[0].Value,
+					"q", cmd.Data.Options[0].Value,
 					"g", guildId,
-					"c", data.ChnlId,
+					"c", cmd.ChnlId,
 				)
 				postResp(
-					data.Id, data.Token, "Finding song...",
+					cmd.Id, cmd.Token, "Finding song...",
 					deferredChannelMessageWithSource,
 				)
 				go find(
-					ctx, data.Data.Options[0].Value,
+					ctx, cmd.Data.Options[0].Value,
 					ytApiKey, songFolder,
 					id, doneFind,
 				)
+			case "skip":
+				head := q.head()
+				if head == nil {
+					postResp(
+						cmd.Id, cmd.Token, "Nothing to skip",
+						channelMessageWithSource,
+					)
+					break
+				}
+				slog.Info("skipping", "g", guildId)
+				postResp(
+					cmd.Id, cmd.Token, "Skipping",
+					channelMessageWithSource,
+				)
+				gw.StopAudio(guildId)
+				// Respond to interaction if song hasn't been found yet
+				if head.found == FINDING {
+					patchResp(botAppId, head.token, "Skipped")
+				}
+				q.pop()
+				startNextSong()
 			case "stop":
 				slog.Info("stopping", "g", guildId)
 				postResp(
-					data.Id, data.Token, "Stopped",
+					cmd.Id, cmd.Token, "Stopped",
 					channelMessageWithSource,
 				)
 				gw.StopAudio(guildId)
 				gw.ChangeChannel(ctx, guildId, internal.NullChannelId)
-				// Respond to interaction for songs
-				// that have not yet been found
+				// Respond to interaction for songs that haven't been found yet
 				for head := q.head(); head != nil; head = q.head() {
-					if !head.found {
-						patchResp(
-							botAppId, head.token,
-							"Stopped",
-						)
+					if head.found == FINDING {
+						patchResp(botAppId, head.token, "Stopped")
 					}
 					q.pop()
 				}
@@ -187,63 +185,38 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 				"p", res.path,
 				"g", guildId,
 			)
-			song.found = true
-			song.skip = !res.pass
 			song.title = res.title
 			song.path = res.path
-			// Play the song if it's head of queue
+			song.found = FOUND
+			if !res.pass {
+				song.found = NOT_FOUND
+				patchResp(
+					botAppId, song.token,
+					"Could not find song",
+				)
+			}
+			// Check if song is head and play it
 			head := q.head()
-			if head.id == song.id {
-				// Check if song couldn't be found
-				if head.skip {
+			if head == nil {
+				break
+			}
+			if head.id != song.id {
+				slog.Info("queued", "p", song.path)
+				if song.found == FOUND {
 					patchResp(
-						botAppId, head.token,
-						"Could not find song",
+						botAppId, song.token,
+						"Added "+song.title+" to queue",
 					)
-					// Send to donePlay so that next
-					// songs can attempt to be played
-					donePlay <- head.id
-					break
 				}
-				// Try to join channel
-				err := gw.ChangeChannel(ctx, guildId, head.chnlId)
-				if err != nil {
-					slog.Error(
-						"join fail",
-						"g", guildId,
-						"c", head.chnlId,
-						"e", err,
-					)
-					patchResp(
-						botAppId, head.token,
-						"Could not join channel",
-					)
-					// Send to donePlay so that next
-					// songs can attempt to be played
-					donePlay <- head.id
-					break
-				}
-				// Play song
+				break
+			}
+			if head.found == FOUND {
 				patchResp(
 					botAppId, head.token,
 					"Playing "+head.title,
 				)
-				go play(head.path, head.id)
-			} else {
-				// Check if song couldn't be found
-				if song.skip {
-					patchResp(
-						botAppId, song.token,
-						"Could not find song",
-					)
-					break
-				}
-				slog.Info("queued", "p", song.path)
-				patchResp(
-					botAppId, song.token,
-					"Added "+song.title+" to queue",
-				)
 			}
+			startNextSong()
 		case id := <-donePlay:
 			// Pop the song if it's still the head
 			head := q.head()
@@ -254,34 +227,7 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 				break
 			}
 			q.pop()
-			// Pop songs that have been found
-			// and marked for skipping until
-			// reaching a song that can be played
-			// or hasn't been found yet
-			for head := q.head(); head != nil; head = q.head() {
-				if head.skip {
-					q.pop()
-					continue
-				}
-				if !head.found {
-					break
-				}
-				// Try to join channel
-				err := gw.ChangeChannel(ctx, guildId, head.chnlId)
-				if err != nil {
-					slog.Error(
-						"join fail",
-						"g", guildId,
-						"c", head.chnlId,
-						"e", err,
-					)
-					q.pop()
-					continue
-				}
-				// Play next song
-				go play(head.path, head.id)
-				break
-			}
+			startNextSong()
 		case <-timer.C:
 			// Check if there is a song in the queue
 			head := q.head()
@@ -312,42 +258,12 @@ func guildCmdHandler(gw *internal.Gateway, ctx context.Context, cmd chan interna
 	}
 }
 
-func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, done chan findResult) {
+func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, doneFind chan findResult) {
 	// Search youtube for most relevant video
-	results, err := func() (*ytSearchList, error) {
-		req, err := http.NewRequest("GET", youtubeApi, nil)
-		if err != nil {
-			return nil, err
-		}
-		params := req.URL.Query()
-		params.Set("q", html.EscapeString(query))
-		params.Set("key", ytApiKey)
-		params.Set("part", "snippet")
-		params.Set("type", "video")
-		params.Set("maxResults", "1")
-		params.Set("safeSearch", "none")
-		req.URL.RawQuery = params.Encode()
-		client := &http.Client{}
-		resp, err := client.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		defer resp.Body.Close()
-
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return nil, err
-		}
-		results := ytSearchList{}
-		err = json.Unmarshal(body, &results)
-		if err != nil {
-			return nil, err
-		}
-		return &results, nil
-	}()
+	results, err := searchYoutube(query, ytApiKey)
 	if err != nil {
 		slog.Error("ytapi", "e", err)
-		done <- findResult{
+		doneFind <- findResult{
 			id: id, pass: false,
 		}
 		return
@@ -355,7 +271,7 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 
 	if len(results.Items) < 1 {
 		slog.Error("find no results", "q", query)
-		done <- findResult{
+		doneFind <- findResult{
 			id: id, pass: false,
 		}
 		return
@@ -385,7 +301,7 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 		ytdlpErr := stdErr.String()
 		if err != nil || len(ytdlpErr) > 0 {
 			slog.Error("find ytdlp err", "e1", ytdlpErr, "e2", err)
-			done <- findResult{
+			doneFind <- findResult{
 				id: id, pass: false,
 			}
 			return
@@ -421,7 +337,7 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 		ffmpegErr := stdErr.String()
 		if err != nil || len(ffmpegErr) > 0 {
 			slog.Error("find ffmpeg err", "e1", ffmpegErr, "e2", err)
-			done <- findResult{
+			doneFind <- findResult{
 				id: id, pass: false,
 			}
 			return
@@ -431,7 +347,7 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 	
 		fmtdur := fmtDuration(duration)
 		slog.Info("find downloaded", "id", songId, "dur", fmtdur)
-		done <- findResult{
+		doneFind <- findResult{
 			id, true, title + " (" + fmtdur + ")", opusPath,
 		}
 		return
@@ -531,69 +447,20 @@ func find(ctx context.Context, query, ytApiKey, songFolder string, id songid, do
 
 	fmtdur := fmtDuration(duration)
 	slog.Info("find already downloaded", "id", songId, "dur", fmtdur)
-	done <- findResult{
+	doneFind <- findResult{
 		id, true, title + " (" + fmtdur + ")", opusPath,
 	}
 }
 
-func postResp(id, token, msg string, intType interactionRespType) error {
-	data, _ := json.Marshal(interactionPost{
-		intType, interactionContent{msg},
-	})
-	body := bytes.NewReader(data)
-	resp, err := http.Post(
-		fmt.Sprintf(
-			"%s/interactions/%s/%s/callback",
-			discordApi, id, token,
-		),
-		"application/json",
-		body,
-	)
+func play(gw *internal.Gateway, ctx context.Context, guildId, path string, id songid, donePlay chan songid) {
+	slog.Info("play start", "p", path, "g", guildId)
+	err := gw.PlayAudio(ctx, guildId, path)
 	if err != nil {
-		return err
+		slog.Error("play fail", "e", err, "g", guildId)
+	} else {
+		slog.Info("play done", "g", guildId)
 	}
-	resp.Body.Close()
-	return nil
-}
-
-func patchResp(id, token, msg string) error {
-	data, _ := json.Marshal(interactionContent{msg})
-	body := bytes.NewReader(data)
-	req, err := http.NewRequest(
-		"PATCH",
-		fmt.Sprintf(
-			"%s/webhooks/%s/%s/messages/@original",
-			discordApi, id, token,
-		),
-		body,
-	)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	resp.Body.Close()
-	return nil
-}
-
-func fmtDuration(seconds int) string {
-	if seconds >= 3600 {
-		return fmt.Sprintf(
-			"%d:%02d:%02d",
-			seconds/3600,
-			(seconds/60)%60,
-			seconds%60,
-		)
-	}
-	return fmt.Sprintf(
-		"%d:%02d",
-		seconds/60,
-		seconds%60,
-	)
+	donePlay <- id
 }
 
 var _uuid songid

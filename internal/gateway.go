@@ -105,7 +105,7 @@ type guildState struct {
 	joinedChnl    chan string
 	joinLock      sync.Mutex
 	playLock      sync.Mutex
-	isPlaying     bool
+	stop          bool
 	// Voice gateway related
 	vState         vGwState
 	vWs            *websocket.Conn
@@ -378,20 +378,17 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, songPath string) 
 		return errors.New("gw not in guild")
 	}
 
+	// Check if bot is in channel
+	if guild.chnlId == NullChannelId {
+		return errors.New("gw not in channel")
+	}	
+
 	// Lock guild to prevent PlayAudio()
 	// from executing in another thread
 	guild.playLock.Lock()
 	defer guild.playLock.Unlock()
 
-	// Check if bot is in channel
-	if guild.chnlId == NullChannelId {
-		return errors.New("gw not in channel")
-	}
-
-	guild.isPlaying = true
-	defer func() {
-		guild.isPlaying = false
-	}()
+	guild.stop = false
 
 	f, err := os.Open(songPath)
 	if err != nil {
@@ -421,7 +418,7 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, songPath string) 
 	}()
 
 	// Parse Opus pages
-	for guild.isPlaying {
+	for {
 		// Parse page header
 		n, err := io.ReadFull(f, headerBuf[:])
 		if err == io.EOF || n < pageHeaderLen {
@@ -498,9 +495,8 @@ func (gw *Gateway) PlayAudio(rootctx context.Context, guildId, songPath string) 
 					pNum = 0
 				}
 			}
-
-			if !guild.isPlaying {
-				break
+			if guild.stop {
+				return nil
 			}
 		}
 	}
@@ -520,6 +516,8 @@ func (gw *Gateway) StopAudio(guildId string) error {
 	if guild.chnlId == NullChannelId {
 		return errors.New("gw not in channel")
 	}
+
+	guild.stop = true
 
 	return nil
 }
